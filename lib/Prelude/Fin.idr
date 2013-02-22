@@ -37,6 +37,14 @@ strengthen {n = S k} (fS i) with (strengthen i)
   strengthen (fS k) | Right x  = Right (fS x)
 strengthen f = Left f
 
+fromNat : (n : Nat) -> Fin (S n)
+fromNat O = fO
+fromNat (S k) = fS (fromNat k)
+
+fromNatLT : (n : Nat) -> LT n m -> Fin m
+fromNatLT O (lteSucc lteZero) = fO
+fromNatLT (S k) (lteSucc p) = fS (fromNatLT k p)
+
 last : Fin (S n)
 last {n=O} = fO
 last {n=S _} = fS last
