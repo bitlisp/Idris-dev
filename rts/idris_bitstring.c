@@ -1,5 +1,33 @@
 #include "idris_rts.h"
 
+VAL MKBITS8(VM* vm, uint8_t val) {
+    Closure* cl = allocate(vm, sizeof(Closure), 0);
+    SETTY(cl, BITS8);
+    cl->info.bits8 = val;
+    return cl;
+}
+
+VAL MKBITS16(VM* vm, uint16_t val) {
+    Closure* cl = allocate(vm, sizeof(Closure), 0);
+    SETTY(cl, BITS16);
+    cl->info.bits16 = val;
+    return cl;
+}
+
+VAL MKBITS32(VM* vm, uint32_t val) {
+    Closure* cl = allocate(vm, sizeof(Closure), 0);
+    SETTY(cl, BITS32);
+    cl->info.bits32 = val;
+    return cl;
+}
+
+VAL MKBITS64(VM* vm, uint64_t val) {
+    Closure* cl = allocate(vm, sizeof(Closure), 0);
+    SETTY(cl, BITS64);
+    cl->info.bits64 = val;
+    return cl;
+}
+
 VAL idris_b8CopyForGC(VM *vm, VAL a) {
     VAL cl = allocate(vm, sizeof(Closure), 1);
     SETTY(cl, BITS8);
