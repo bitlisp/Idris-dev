@@ -57,12 +57,11 @@ ForeignTy xs t = mkForeign' (reverse xs) (IO (interpFTy t)) where
    mkForeign' Nil ty       = ty
    mkForeign' (s :: ss) ty = mkForeign' ss (interpFTy s -> ty)
 
--- FIXME: Calls to 'the' shouldn't be necessary, but the unifier breaks otherwise
 wrapFFun : (ts : List FTy) -> (t : FTy) -> ForeignTy ts t -> WrappedFTy ts t
-wrapFFun Nil FBits8   f = f `io_bind` (io_return . (the (machineTy (nextBytes 8) -> Bits 8) MkBits))
-wrapFFun Nil FBits16  f = f `io_bind` (io_return . (the (machineTy (nextBytes 16) -> Bits 16) MkBits))
-wrapFFun Nil FBits32  f = f `io_bind` (io_return . (the (machineTy (nextBytes 32) -> Bits 32) MkBits))
-wrapFFun Nil FBits64  f = f `io_bind` (io_return . (the (machineTy (nextBytes 64) -> Bits 64) MkBits))
+wrapFFun Nil FBits8   f = f `io_bind` (io_return . MkBits)
+wrapFFun Nil FBits16  f = f `io_bind` (io_return . MkBits)
+wrapFFun Nil FBits32  f = f `io_bind` (io_return . MkBits)
+wrapFFun Nil FBits64  f = f `io_bind` (io_return . MkBits)
 wrapFFun Nil FInt     f = f -- Is there any way to avoid enumerating these explicitly?
 wrapFFun Nil FFloat   f = f
 wrapFFun Nil FChar    f = f
