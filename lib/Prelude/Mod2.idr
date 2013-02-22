@@ -1,6 +1,6 @@
-module Data.Mod2
+module Prelude.Mod2
 
-import Data.Bits
+import Prelude.Bits
 
 %default total
 
@@ -58,7 +58,3 @@ modToStr x = pack (reverse (helper x))
       helper : Mod2 n -> List Char
       helper x = strIndex "0123456789" (bitsToInt (cast (x `rem` 10)))
                  :: (if x < 10 then [] else helper (x `div` 10))
-
-
-instance Show (Mod2 n) where
-    show = modToStr

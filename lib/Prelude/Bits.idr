@@ -1,4 +1,7 @@
-module Data.Bits
+module Prelude.Bits
+
+import Prelude.Fin
+import Prelude.Strings
 
 %default total
 
@@ -434,6 +437,3 @@ bitsToStr x = pack (helper last x)
       helper : Fin (S n) -> Bits n -> List Char
       helper fO _ = []
       helper (fS x) b = (if getBit x b then '1' else '0') :: helper (weaken x) b
-
-instance Show (Bits n) where
-    show = bitsToStr

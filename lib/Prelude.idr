@@ -15,6 +15,8 @@ import Prelude.Either
 import Prelude.Vect
 import Prelude.Strings
 import Prelude.Chars
+import Prelude.Bits
+import Prelude.Mod2
 
 %access public
 %default total
@@ -30,6 +32,22 @@ instance Show Nat where
 
 instance Show Int where 
     show = prim__intToStr
+
+instance Show (Bits n) where
+    show x = helper last x
+        where
+          %assert_total -- FIXME: Shouldn't be necessary
+          helper : Fin (S n) -> Bits n -> String
+          helper fO _ = ""
+          helper (fS x) b = (if getBit x b then '1' else '0') `strCons` helper (weaken x) b
+
+instance Show (Mod2 n) where
+    show = show'
+        where
+          %assert_total
+          show' : Mod2 n -> String
+          show' x = strCons (strIndex "0123456789" (bitsToInt (cast (x `rem` 10))))
+                            (if x < 10 then "" else show (x `div` 10))
 
 instance Show Integer where 
     show = prim__bigIntToStr
