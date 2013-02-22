@@ -46,16 +46,12 @@ interpWrappedFTy FBits64 = Bits 64
 interpWrappedFTy x = interpFTy x
 
 WrappedFTy : (ts : List FTy) -> (t : FTy) -> Type
-WrappedFTy ts t = mkForeign' (reverse ts) (IO (interpWrappedFTy t)) where
-   mkForeign' : List FTy -> Type -> Type
-   mkForeign' Nil ty       = ty
-   mkForeign' (s :: ss) ty = mkForeign' ss (interpWrappedFTy s -> ty)
+WrappedFTy Nil     rt = IO (interpWrappedFTy rt)
+WrappedFTy (t::ts) rt = interpWrappedFTy t -> WrappedFTy ts rt
 
 ForeignTy : (xs:List FTy) -> (t:FTy) -> Type
-ForeignTy xs t = mkForeign' (reverse xs) (IO (interpFTy t)) where 
-   mkForeign' : List FTy -> Type -> Type
-   mkForeign' Nil ty       = ty
-   mkForeign' (s :: ss) ty = mkForeign' ss (interpFTy s -> ty)
+ForeignTy Nil     rt = IO (interpFTy rt)
+ForeignTy (t::ts) rt = interpFTy t -> ForeignTy ts rt
 
 wrapFFun : (ts : List FTy) -> (t : FTy) -> ForeignTy ts t -> WrappedFTy ts t
 wrapFFun Nil FBits8   f = f `io_bind` (io_return . MkBits)
@@ -69,10 +65,19 @@ wrapFFun Nil FString  f = f
 wrapFFun Nil FPtr     f = f
 wrapFFun Nil (FAny _) f = f
 wrapFFun Nil FUnit    f = f
+-- FIXME: Absurdly slow typechecking
 wrapFFun (FBits8 ::ts) t f = (\(MkBits b) => wrapFFun ts t (f b))
 wrapFFun (FBits16::ts) t f = (\(MkBits b) => wrapFFun ts t (f b))
 wrapFFun (FBits32::ts) t f = (\(MkBits b) => wrapFFun ts t (f b))
 wrapFFun (FBits64::ts) t f = (\(MkBits b) => wrapFFun ts t (f b))
+wrapFFun (FInt::ts) t f = (\x => wrapFFun ts t (f x))
+wrapFFun (FFloat::ts) t f = (\x => wrapFFun ts t (f x))
+wrapFFun (FChar::ts) t f = (\x => wrapFFun ts t (f x))
+wrapFFun (FString::ts) t f = (\x => wrapFFun ts t (f x))
+wrapFFun (FPtr::ts) t f = (\x => wrapFFun ts t (f x))
+wrapFFun (FAny _::ts) t f = (\x => wrapFFun ts t (f x))
+wrapFFun (FUnit::ts) t f = (\x => wrapFFun ts t (f x))
+
 
 data Foreign : Type -> Type where
     FFun : String -> (xs:List FTy) -> (t:FTy) -> 
