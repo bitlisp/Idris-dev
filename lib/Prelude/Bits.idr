@@ -4,6 +4,7 @@ import Prelude.Fin
 import Prelude.Strings
 
 %default total
+%access public
 
 divCeil : Nat -> Nat -> Nat
 divCeil x y = case x `mod` y of

@@ -233,6 +233,10 @@ c_irts FUnit l x = x
 c_irts FPtr l x = l ++ "MKPTR(vm, " ++ x ++ ")"
 c_irts FDouble l x = l ++ "MKFLOAT(vm, " ++ x ++ ")"
 c_irts FAny l x = l ++ x
+c_irts FBits8 l x = l ++ "MKBITS8(vm, " ++ x ++ ")"
+c_irts FBits16 l x = l ++ "MKBITS16(vm, " ++ x ++ ")"
+c_irts FBits32 l x = l ++ "MKBITS32(vm, " ++ x ++ ")"
+c_irts FBits64 l x = l ++ "MKBITS64(vm, " ++ x ++ ")"
 
 irts_c FInt x = "GETINT(" ++ x ++ ")"
 irts_c FChar x = "GETINT(" ++ x ++ ")"
@@ -241,6 +245,10 @@ irts_c FUnit x = x
 irts_c FPtr x = "GETPTR(" ++ x ++ ")"
 irts_c FDouble x = "GETFLOAT(" ++ x ++ ")"
 irts_c FAny x = x
+irts_c FBits8 x = "GETBITS8(" ++ x ++ ")"
+irts_c FBits16 x = "GETBITS16(" ++ x ++ ")"
+irts_c FBits32 x = "GETBITS32(" ++ x ++ ")"
+irts_c FBits64 x = "GETBITS64(" ++ x ++ ")"
 
 doOp v LPlus [l, r] = v ++ "ADD(" ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LMinus [l, r] = v ++ "INTOP(-," ++ creg l ++ ", " ++ creg r ++ ")"

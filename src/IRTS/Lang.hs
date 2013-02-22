@@ -77,6 +77,7 @@ data FLang = LANG_C
   deriving (Show, Eq)
 
 data FType = FInt | FChar | FString | FUnit | FPtr | FDouble | FAny
+           | FBits8 | FBits16 | FBits32 | FBits64
   deriving (Show, Eq)
 
 data LAlt = LConCase Int Name [Name] LExp

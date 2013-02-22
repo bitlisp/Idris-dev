@@ -289,6 +289,10 @@ mkIty "FChar"   = FChar
 mkIty "FString" = FString
 mkIty "FPtr"    = FPtr
 mkIty "FUnit"   = FUnit
+mkIty "FBits8"  = FBits8
+mkIty "FBits16" = FBits16
+mkIty "FBits32" = FBits32
+mkIty "FBits64" = FBits64
 
 zname = NS (UN "O") ["Nat","Prelude"] 
 sname = NS (UN "S") ["Nat","Prelude"] 

@@ -170,6 +170,10 @@ pType = do reserved "Int"; return FInt
     <|> do reserved "Unit"; return FUnit
     <|> do reserved "Ptr"; return FPtr
     <|> do reserved "Any"; return FAny
+    <|> do reserved "Bits8"; return FBits8
+    <|> do reserved "Bits16"; return FBits16
+    <|> do reserved "Bits32"; return FBits32
+    <|> do reserved "Bits64"; return FBits64
 
 pCase :: LParser LExp
 pCase = do reserved "case"; e <- pLExp; reserved "of"

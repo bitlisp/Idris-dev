@@ -1,6 +1,11 @@
 #ifndef _IDRISBITSTRING_H
 #define _IDRISBITSTRING_H
 
+#define GETBITS8(cl) (cl->info.bits8)
+#define GETBITS16(cl) (cl->info.bits16)
+#define GETBITS32(cl) (cl->info.bits32)
+#define GETBITS64(cl) (cl->info.bits64)
+
 VAL MKBITS8(VM* vm, uint8_t val);
 VAL MKBITS16(VM* vm, uint16_t val);
 VAL MKBITS32(VM* vm, uint32_t val);
