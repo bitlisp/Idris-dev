@@ -31,8 +31,8 @@ codegenLLVM defs out exec
         mapM (\f -> L.setLinkage f L.InternalLinkage) decls
         mapM_ (toLLVMDef prims m . snd) defs
         buildMain m (MN 0 "runMain")
-        error <- L.verifyModule m
-        case error of
+        err <- L.verifyModule m
+        case err of
           Nothing  -> case exec of
                         Raw -> L.printModuleToFile m out
                         Object -> buildObj m out
@@ -45,18 +45,18 @@ codegenLLVM defs out exec
                                                           , "-lidris_rts", "-lgmp", "-lpthread", "-lm"
                                                           , "-o", out
                                                           ]
-                                  when (exit /= ExitSuccess) $ fail "FAILURE: Linking"
-          Just msg -> fail msg
+                                  when (exit /= ExitSuccess) $ ierror "FAILURE: Linking"
+          Just msg -> ierror msg
     where
       writeBc m dest
           = do L.writeBitcodeToFile m dest
                exit <- rawSystem "opt" ["-std-compile-opts", "-std-link-opts", "-O3", "-o", dest, dest]
-               when (exit /= ExitSuccess) $ fail "FAILURE: Bitcode optimization"
+               when (exit /= ExitSuccess) $ ierror "FAILURE: Bitcode optimization"
       buildObj m dest
           = withTmpFile $ \bitcode -> do
               writeBc m bitcode
               exit <- rawSystem "llc" ["-filetype=obj", "-O3", "-o", dest, bitcode]
-              when (exit /= ExitSuccess) $ fail "FAILURE: Object file output"
+              when (exit /= ExitSuccess) $ ierror "FAILURE: Object file output"
 
       withTmpFile :: (FilePath -> IO a) -> IO a
       withTmpFile f = do
@@ -82,7 +82,7 @@ buildMain m entryPoint
         case maybeRunMain of
           Just runMain -> do call <- L.buildCall b runMain [vm] ""
                              L.setInstructionCallConv call L.Fast
-          Nothing -> fail $ "Internal error: missing entry point: " ++ (show entryPoint)
+          Nothing -> ierror $ "missing entry point: " ++ (show entryPoint)
         L.buildRet b $ L.constInt L.int32Type 0 True
         return ()
 
@@ -288,7 +288,7 @@ toLLVMDecl p m (SFun name args _ _)
 toLLVMDef :: Prims -> L.Module -> SDecl -> IO L.Value
 toLLVMDef prims m (SFun name args _ exp)
     = L.withBuilder $ \b -> do
-        f <- fmap (maybe (error "toLLVMDef: impossible") id) $ L.getNamedFunction m (llname name)
+        f <- fmap (maybe (ierror "toLLVMDef: impossible") id) $ L.getNamedFunction m (llname name)
         bb <- L.appendBasicBlock f "entry"
         L.positionAtEnd b bb
         params <- L.getParams f
@@ -300,8 +300,8 @@ toLLVMDef prims m (SFun name args _ exp)
           L.dumpValue f
           err <- L.verifyModule m
           case err of
-            Just msg -> fail $ "CodegenLLVM: Internal error: Broken function: " ++ msg
-            Nothing -> error "CodegenLLVM.toLLVMDef: impossible"
+            Just msg -> ierror $ "Broken function: " ++ msg
+            Nothing -> ierror "toLLVMDef: impossible"
         return f
 
 buildVal :: Prims -> L.Builder -> L.Value -> TypeID -> Int -> IO (L.Value, L.Value)
@@ -463,7 +463,7 @@ lookupVar m s (Loc level) = return $ s !! level
 lookupVar m s (Glob name)
     = do maybeVal <- L.getNamedGlobal m (show name)
          case maybeVal of
-           Nothing -> fail $ "Undefined global: " ++ (show name)
+           Nothing -> ierror $ "Undefined global: " ++ (show name)
            Just val -> return val
 
 toLLVMExp :: Prims ->
@@ -479,7 +479,7 @@ toLLVMExp p m f b vm s (SV v) = lookupVar m s v
 toLLVMExp p m f b vm s (SApp isTail name vars)
     = do maybeCallee <- L.getNamedFunction m (llname name)
          case maybeCallee of
-           Nothing -> fail $ "Undefined function: " ++ (show name)
+           Nothing -> ierror $ "Undefined function: " ++ (show name)
            Just callee -> do
              args <- mapM (lookupVar m s) vars
              call <- L.buildCall b callee (vm:args) ""
@@ -531,7 +531,7 @@ toLLVMExp p m f b vm s (SCase var alts')
                                           (L.constInt L.int32Type (fromIntegral ctorTag) True, entry)
                                       SConstCase (I i) _ ->
                                           (L.constInt L.int32Type (fromIntegral i) True, entry)
-                                      SConstCase _ _ -> error "Unimplemented case on non-int primitive")
+                                      SConstCase _ _ -> ierror "Unimplemented case on non-int primitive")
                            $ zip alts altEntryBlocks
                return s
          case switchBB of
@@ -685,3 +685,6 @@ toLLVMExp p m f b vm s (SProj var index)
               ] ""
          L.buildLoad b p ""
 toLLVMExp p _ _ _ _ _ SNothing = return $ L.getUndef $ L.pointerType (valTy p) 0
+
+ierror :: String -> a
+ierror msg = error $ "CodegenLLVM: INTERNAL ERROR: " ++ msg
