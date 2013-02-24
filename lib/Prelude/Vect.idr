@@ -9,7 +9,7 @@ import Prelude.Nat
 
 infixr 7 :: 
 
-data Vect : Set -> Nat -> Set where
+data Vect : Type -> Nat -> Type where
   Nil  : Vect a O
   (::) : a -> Vect a n -> Vect a (S n)
 
@@ -76,6 +76,19 @@ replicate O     x = []
 replicate (S k) x = x :: replicate k x
 
 --------------------------------------------------------------------------------
+-- Zips and unzips
+--------------------------------------------------------------------------------
+
+zip : Vect a n -> Vect b n -> Vect (a, b) n
+zip []        []        = []
+zip (x :: xs) (y :: ys) = (x, y) :: (zip xs ys)
+
+unzip : Vect (a, b) n -> (Vect a n, Vect b n)
+unzip []           = ([], [])
+unzip ((l, r)::xs) with (unzip xs)
+  | (lefts, rights) = (l::lefts, r::rights)
+
+--------------------------------------------------------------------------------
 -- Maps
 --------------------------------------------------------------------------------
 
@@ -116,10 +129,10 @@ total or : Vect Bool m -> Bool
 or = foldr (||) False
 
 total any : (a -> Bool) -> Vect a m -> Bool
-any p = or . map p
+any p = Vect.or . map p
 
 total all : (a -> Bool) -> Vect a m -> Bool
-all p = and . map p
+all p = Vect.and . map p
 
 --------------------------------------------------------------------------------
 -- Transformations
@@ -287,6 +300,14 @@ catMaybes []             = (_ ** [])
 catMaybes (Nothing::xs)  = catMaybes xs
 catMaybes ((Just j)::xs) with (catMaybes xs)
   | (_ ** tail) = (_ ** j::tail)
+
+range : Vect (Fin n) n
+range =
+  reverse range_
+ where
+  range_ : Vect (Fin n) n
+  range_ {n=O} = Nil
+  range_ {n=(S _)} = last :: map weaken range_
 
 --------------------------------------------------------------------------------
 -- Proofs

@@ -1,20 +1,19 @@
 #include "idris_rts.h"
 #include "idris_gc.h"
+#include "idris_bitstring.h"
 #include <assert.h>
 
 VAL copy(VM* vm, VAL x) {
-    int i;
+    int i, ar;
     Closure* cl = NULL;
     if (x==NULL || ISINT(x)) {
         return x;
     }
     switch(GETTY(x)) {
     case CON:
-        cl = allocCon(vm, x->info.c.arity, 1);
-        cl->info.c.tag = x->info.c.tag;
-        cl->info.c.arity = x->info.c.arity;
-
-        for(i = 0; i < x->info.c.arity; ++i) {
+        ar = CARITY(x);
+        allocCon(cl, vm, CTAG(x), ar, 1);
+        for(i = 0; i < ar; ++i) {
 //            *argptr = copy(vm, *((VAL*)(x->info.c.args)+i)); // recursive version
             cl->info.c.args[i] = x->info.c.args[i];
         }
@@ -31,6 +30,18 @@ VAL copy(VM* vm, VAL x) {
     case PTR:
         cl = MKPTRc(vm, x->info.ptr);
         break;
+    case BITS8:
+        cl = idris_b8CopyForGC(vm, x);
+        break;
+    case BITS16:
+        cl = idris_b16CopyForGC(vm, x);
+        break;
+    case BITS32:
+        cl = idris_b32CopyForGC(vm, x);
+        break;
+    case BITS64:
+        cl = idris_b64CopyForGC(vm, x);
+        break;
     case FWD:
         return x->info.ptr;
     default:
@@ -43,6 +54,7 @@ VAL copy(VM* vm, VAL x) {
 
 void cheney(VM *vm) {
     int i;
+    int ar;
     char* scan = vm->heap;
   
     while(scan < vm->heap_next) {
@@ -51,7 +63,8 @@ void cheney(VM *vm) {
        // If it's a CON, copy its arguments
        switch(GETTY(heap_item)) {
        case CON:
-           for(i = 0; i < heap_item->info.c.arity; ++i) {
+           ar = ARITY(heap_item);
+           for(i = 0; i < ar; ++i) {
                // printf("Copying %d %p\n", heap_item->info.c.tag, *argptr);
                VAL newptr = copy(vm, heap_item->info.c.args[i]);
                // printf("Got %p\t\t%p %p\n", newptr, scan, vm->heap_next);

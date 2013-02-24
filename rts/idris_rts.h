@@ -7,18 +7,18 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <stdint.h>
 
 // Closures
 
 typedef enum {
-    CON, INT, BIGINT, FLOAT, STRING, UNIT, PTR, FWD
+    CON, INT, BIGINT, FLOAT, STRING, BITS8, BITS16, BITS32, BITS64, UNIT, PTR, FWD
 } ClosureType;
 
 typedef struct Closure *VAL;
 
 typedef struct {
-    int tag;
-    int arity;
+    int tag_arity;
     VAL args[];
 } con;
 
@@ -32,6 +32,10 @@ typedef struct Closure {
         double f;
         char* str;
         void* ptr;
+        uint8_t bits8;
+        uint16_t bits16;
+        uint32_t bits32;
+        uint64_t bits64;
     } info;
 } Closure;
 
@@ -90,6 +94,9 @@ typedef void(*func)(VM*, VAL*);
 #define RVAL (vm->ret)
 #define LOC(x) (*(vm->valstack_base + (x)))
 #define TOP(x) (*(vm->valstack_top + (x)))
+// Doesn't work! Ordinary assign seems fine though...
+#define UPDATE(x,y) if (!ISINT(x) && !ISINT(y)) \
+   { (x)->ty = (y)->ty; (x)->info = (y)->info; }
 #define REG1 (vm->reg1)
 
 // Retrieving values
@@ -98,7 +105,12 @@ typedef void(*func)(VM*, VAL*);
 #define GETPTR(x) (((VAL)(x))->info.ptr) 
 #define GETFLOAT(x) (((VAL)(x))->info.f)
 
-#define TAG(x) (ISINT(x) || x == NULL ? (-1) : ( (x)->ty == CON ? (x)->info.c.tag : (-1)) )
+#define TAG(x) (ISINT(x) || x == NULL ? (-1) : ( (x)->ty == CON ? (x)->info.c.tag_arity >> 8 : (-1)) )
+#define ARITY(x) (ISINT(x) || x == NULL ? (-1) : ( (x)->ty == CON ? (x)->info.c.tag_arity & 0x000000ff : (-1)) )
+
+// Already checked it's a CON
+#define CTAG(x) (((x)->info.c.tag_arity) >> 8)
+#define CARITY(x) ((x)->info.c.tag_arity & 0x000000ff)
 
 // Use top 16 bits for saying which heap value is in
 // Bottom 16 bits for closure type
@@ -128,12 +140,11 @@ typedef intptr_t i_int;
 #define INITFRAME VAL* myoldbase
 #define REBASE vm->valstack_base = oldbase
 #define RESERVE(x) if (vm->valstack_top+(x) > vm->stack_max) { stackOverflow(); } \
-                   else { bzero(vm->valstack_top, (x)*sizeof(VAL)); }
+                   else { memset(vm->valstack_top, 0, (x)*sizeof(VAL)); }
 #define ADDTOP(x) vm->valstack_top += (x)
 #define TOPBASE(x) vm->valstack_top = vm->valstack_base + (x)
 #define BASETOP(x) vm->valstack_base = vm->valstack_top + (x)
 #define STOREOLD myoldbase = vm->valstack_base
-
 #define CALL(f) f(vm, myoldbase);
 #define TAILCALL(f) f(vm, oldbase);
 
@@ -147,9 +158,7 @@ VAL MKFLOATc(VM* vm, double val);
 VAL MKSTRc(VM* vm, char* str);
 VAL MKPTRc(VM* vm, void* ptr);
 
-VAL MKCON(VM* vm, VAL cl, int tag, int arity, ...);
-
-#define SETTAG(x, a) (x)->info.c.tag = (a)
+// #define SETTAG(x, a) (x)->info.c.tag = (a)
 #define SETARG(x, i, a) ((x)->info.c.args)[i] = ((VAL)(a))
 #define GETARG(x, i) ((x)->info.c.args)[i]
 
@@ -157,7 +166,12 @@ void PROJECT(VM* vm, VAL r, int loc, int arity);
 void SLIDE(VM* vm, int args);
 
 void* allocate(VM* vm, size_t size, int outerlock);
-void* allocCon(VM* vm, int arity, int outerlock);
+// void* allocCon(VM* vm, int arity, int outerlock);
+
+#define allocCon(cl, vm, t, a, o) \
+  cl = allocate(vm, sizeof(Closure) + sizeof(VAL)*a, o); \
+  SETTY(cl, CON); \
+  cl->info.c.tag_arity = ((t) << 8) + (a);
 
 void* vmThread(VM* callvm, func f, VAL arg);
 

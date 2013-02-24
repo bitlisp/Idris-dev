@@ -1,5 +1,5 @@
 Name:           idris
-Version:        0.9.5.1
+Version:        0.9.6.1
 License:        BSD3
 License-file:   LICENSE
 Author:         Edwin Brady
@@ -47,14 +47,18 @@ Build-type:     Custom
 Data-files:            rts/libidris_rts.a rts/idris_rts.h rts/idris_gc.h
                        rts/idris_stdfgn.h rts/idris_main.c rts/idris_gmp.h
                        rts/libtest.c
+                       js/Runtime-common.js
+                       js/Runtime-node.js
+                       js/Runtime-browser.js
 Extra-source-files:    lib/Makefile  lib/*.idr lib/Prelude/*.idr 
                        lib/Network/*.idr lib/Control/*.idr
                        lib/Control/Monad/*.idr lib/Language/*.idr
                        lib/System/Concurrency/*.idr
-                       lib/Data/*.idr
+                       lib/Data/*.idr lib/Debug/*.idr
                        tutorial/examples/*.idr lib/base.ipkg
                        config.mk
                        rts/*.c rts/*.h rts/Makefile
+                       js/*.js
 
 source-repository head
   type:     git
@@ -76,7 +80,7 @@ Executable     idris
                               Idris.Compiler, Idris.Prover, Idris.ElabTerm,
                               Idris.Coverage, Idris.IBC, Idris.Unlit,
                               Idris.DataOpts, Idris.Transforms, Idris.DSL, 
-                              Idris.UnusedArgs, Idris.Docs,
+                              Idris.UnusedArgs, Idris.Docs, Idris.Completion,
 
                               Util.Pretty, Util.System,
                               Pkg.Package, Pkg.PParser,
@@ -84,12 +88,13 @@ Executable     idris
                               IRTS.Lang, IRTS.LParser, IRTS.Bytecode, IRTS.Simplified,
                               IRTS.CodegenC, IRTS.Defunctionalise, IRTS.Inliner,
                               IRTS.Compiler, IRTS.CodegenJava, IRTS.BCImp,
-                              IRTS.CodegenLLVM,
+                              IRTS.CodegenJavaScript, IRTS.CodegenLLVM,
+                              IRTS.CodegenCommon, IRTS.DumpBC
 
                               Paths_idris
 
-               Build-depends:   base>=4 && <5, parsec, mtl, Cabal, 
-                                haskeline>=0.7,
+               Build-depends:   base>=4 && <5, parsec>=3, mtl, Cabal, 
+                                haskeline>=0.7, split, directory,
                                 containers, process, transformers, filepath, 
                                 directory, binary, bytestring, pretty, llvm-wrapper
                                 

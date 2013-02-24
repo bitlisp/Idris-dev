@@ -2,18 +2,18 @@ module Main
 
 data Ty = TyInt | TyBool| TyFun Ty Ty
 
-interpTy : Ty -> Set
+interpTy : Ty -> Type
 interpTy TyInt       = Int
 interpTy TyBool      = Bool
 interpTy (TyFun s t) = interpTy s -> interpTy t
 
 using (G : Vect Ty n) 
 
-  data Env : Vect Ty n -> Set where
+  data Env : Vect Ty n -> Type where
       Nil  : Env Nil
       (::) : interpTy a -> Env G -> Env (a :: G)
 
-  data HasType : (i : Fin n) -> Vect Ty n -> Ty -> Set where
+  data HasType : (i : Fin n) -> Vect Ty n -> Ty -> Type where
       stop : HasType fO (t :: G) t
       pop  : HasType k G t -> HasType (fS k) (u :: G) t
 
@@ -21,7 +21,7 @@ using (G : Vect Ty n)
   lookup stop    (x :: xs) = x
   lookup (pop k) (x :: xs) = lookup k xs
 
-  data Expr : Vect Ty n -> Ty -> Set where
+  data Expr : Vect Ty n -> Ty -> Type where
       Var : HasType i G t -> Expr G t
       Val : (x : Int) -> Expr G TyInt
       Lam : Expr (a :: G) t -> Expr G (TyFun a t)
@@ -44,6 +44,9 @@ using (G : Vect Ty n)
 
   eAdd : Expr G (TyFun TyInt (TyFun TyInt TyInt))
   eAdd = Lam (Lam (Op (+) (Var stop) (Var (pop stop))))
+
+  eEq : Expr G (TyFun TyInt (TyFun TyInt TyBool))
+  eEq = Lam (Lam (Op (==) (Var stop) (Var (pop stop))))
   
   eDouble : Expr G (TyFun TyInt TyInt)
   eDouble = Lam (App (App eAdd (Var stop)) (Var stop))

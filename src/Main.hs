@@ -4,6 +4,7 @@ import System.Console.Haskeline
 import System.IO
 import System.Environment
 import System.Exit
+import System.FilePath ((</>), addTrailingPathSeparator)
 
 import Data.Maybe
 import Data.Version
@@ -27,6 +28,8 @@ import Idris.Primitives
 import Idris.Imports
 import Idris.Error
 
+import Util.System ( getLibFlags, getIdrisLibDir, getIncFlags )
+
 import Pkg.Package
 
 import Paths_idris
@@ -36,7 +39,7 @@ import Paths_idris
 
 main = do xs <- getArgs
           let opts = parseArgs xs
-          runInputT defaultSettings $ execStateT (runIdris opts) idrisInit
+          execStateT (runIdris opts) idrisInit
 
 runIdris :: [Opt] -> Idris ()
 runIdris opts = do
@@ -59,16 +62,16 @@ usage = do putStrLn usagemsg
 showver = do putStrLn $ "Idris version " ++ ver
              exitWith ExitSuccess
 
-showLibs = do dir <- getDataDir
-              putStrLn $ "-L" ++ dir ++ "/rts -lidris_rts -lgmp -lpthread"
+showLibs = do libFlags <- getLibFlags
+              putStrLn libFlags
               exitWith ExitSuccess
 
-showLibdir = do dir <- getDataDir
-                putStrLn $ dir ++ "/"
+showLibdir = do dir <- getIdrisLibDir
+                putStrLn dir
                 exitWith ExitSuccess
 
-showIncs = do dir <- getDataDir
-              putStrLn $ "-I" ++ dir ++ "/rts"
+showIncs = do incFlags <- getIncFlags
+              putStrLn incFlags
               exitWith ExitSuccess
 
 usagemsg = "Idris version " ++ ver ++ "\n" ++
@@ -83,10 +86,10 @@ usagemsg = "Idris version " ++ ver ++ "\n" ++
            "\t--total           Require functions to be total by default\n" ++
            "\t--warnpartial     Warn about undeclared partial functions\n" ++
            "\t--typeintype      Disable universe checking\n" ++
-           "\t--log [level]     Set debugging log level\n" ++
-           "\t--llvm            Use the LLVM code generation backend\n" ++
+           "\t--log [level]     Type debugging log level\n" ++
            "\t-S                Do no further compilation of code generator output\n" ++
            "\t-c                Compile to object files rather than an executable\n" ++
-	   "\t--libdir          Show library install directory and exit\n" ++
-	   "\t--link            Show C library directories and exit (for C linking)\n" ++
-	   "\t--include         Show C include directories and exit (for C linking)\n"
+           "\t--libdir          Show library install directory and exit\n" ++
+           "\t--link            Show C library directories and exit (for C linking)\n" ++
+           "\t--include         Show C include directories and exit (for C linking)\n" ++
+           "\t--target [target] Type the target: C, Java, bytecode, javascript, node\n"

@@ -19,29 +19,14 @@ import Data.Binary hiding (get, put)
 import Core.TT
 import Core.CaseTree
 
-data EvalState = ES { limited :: [(Name, Int)],
-                      steps :: Int -- number of applications/let reductions
-                    }
-
--- Evaluation fails if we hit a boredom threshold - in which case, just return
--- the original (capture the failure in a Maybe)
+data EvalState = ES { limited :: [(Name, Int)] }
 
 type Eval a = State EvalState a
 
 data EvalOpt = Spec | HNF | Simplify Bool | AtREPL
   deriving (Show, Eq)
 
-initEval = ES [] 0
-
-step :: Int -> Eval ()
-step max = do e <- get
-              put (e { steps = steps e + 1 })
-              if steps e > max then fail "Threshold exceeded"
-                               else return () 
-
-getSteps :: Eval Int
-getSteps = do e <- get
-              return (steps e)
+initEval = ES []
 
 -- VALUES (as HOAS) ---------------------------------------------------------
 
@@ -49,7 +34,7 @@ data Value = VP NameType Name Value
            | VV Int
            | VBind Name (Binder Value) (Value -> Eval Value)
            | VApp Value Value
-           | VSet UExp
+           | VType UExp
            | VErased
            | VConstant Const
 --            | VLazy Env [Value] Term
@@ -59,7 +44,7 @@ data HNF = HP NameType Name (TT Name)
          | HV Int
          | HBind Name (Binder HNF) (HNF -> Eval HNF)
          | HApp HNF [HNF] [TT Name]
-         | HSet UExp
+         | HType UExp
          | HConstant Const
          | HTmp Int
     deriving Show
@@ -77,18 +62,15 @@ instance Show (a -> b) where
 -- i.e. it's an intermediate environment that we have while type checking or
 -- while building a proof.
 
-threshold = 1000 -- boredom threshold for evaluation, to prevent infinite typechecking
-                 -- in fact it's a maximum recursion depth
-
 -- Normalise fully type checked terms (so, assume all names/let bindings resolved)
 normaliseC :: Context -> Env -> TT Name -> TT Name
 normaliseC ctxt env t 
-   = evalState (do val <- eval False ctxt threshold [] env t []
+   = evalState (do val <- eval False ctxt [] env t []
                    quote 0 val) initEval
 
 normaliseAll :: Context -> Env -> TT Name -> TT Name
 normaliseAll ctxt env t 
-   = evalState (do val <- eval False ctxt threshold [] env t [AtREPL]
+   = evalState (do val <- eval False ctxt [] env t [AtREPL]
                    quote 0 val) initEval
 
 normalise :: Context -> Env -> TT Name -> TT Name
@@ -96,12 +78,12 @@ normalise = normaliseTrace False
 
 normaliseTrace :: Bool -> Context -> Env -> TT Name -> TT Name
 normaliseTrace tr ctxt env t 
-   = evalState (do val <- eval tr ctxt threshold [] (map finalEntry env) (finalise t) []
+   = evalState (do val <- eval tr ctxt [] (map finalEntry env) (finalise t) []
                    quote 0 val) initEval
 
 specialise :: Context -> Env -> [(Name, Int)] -> TT Name -> TT Name
 specialise ctxt env limits t 
-   = evalState (do val <- eval False ctxt threshold limits (map finalEntry env) (finalise t) []
+   = evalState (do val <- eval False ctxt limits (map finalEntry env) (finalise t) []
                    quote 0 val) (initEval { limited = limits })
 
 -- Like normalise, but we only reduce functions that are marked as okay to 
@@ -109,7 +91,7 @@ specialise ctxt env limits t
 
 simplify :: Context -> Bool -> Env -> TT Name -> TT Name
 simplify ctxt runtime env t 
-   = evalState (do val <- eval False ctxt threshold [(UN "lazy", 0),
+   = evalState (do val <- eval False ctxt [(UN "lazy", 0),
                                                      (UN "par", 0),
                                                      (UN "fork", 0)] 
                                  (map finalEntry env) (finalise t) 
@@ -118,7 +100,9 @@ simplify ctxt runtime env t
 
 hnf :: Context -> Env -> TT Name -> TT Name
 hnf ctxt env t 
-   = evalState (do val <- eval False ctxt threshold [] (map finalEntry env) (finalise t) [HNF]
+   = evalState (do val <- eval False ctxt [] 
+                                 (map finalEntry env) 
+                                 (finalise t) [HNF]
                    quote 0 val) initEval
 
 
@@ -137,6 +121,8 @@ unbindEnv [] tm = tm
 unbindEnv (_:bs) (Bind n b sc) = unbindEnv bs sc
 
 usable :: Bool -> Name -> [(Name, Int)] -> (Bool, [(Name, Int)])
+usable _ _ ns@((MN 0 "STOP", _) : _) = (False, ns)
+usable True (UN "io_bind") ns = (False, ns)
 usable s n [] = (True, [])
 usable s n ns = case lookup n ns of
                   Just 0 -> (False, ns)
@@ -144,37 +130,34 @@ usable s n ns = case lookup n ns of
                   _ -> if s then (True, (n, 0) : filter (\ (n', _) -> n/=n') ns)
                             else (True, (n, 100) : filter (\ (n', _) -> n/=n') ns)
 
-reduction :: Eval ()
-reduction = do ES ns s <- get
-               put (ES ns (s+1))
-
 -- Evaluate in a context of locally named things (i.e. not de Bruijn indexed,
 -- such as we might have during construction of a proof)
 
-eval :: Bool -> Context -> Int -> [(Name, Int)] -> Env -> TT Name -> 
+eval :: Bool -> Context -> [(Name, Int)] -> Env -> TT Name -> 
         [EvalOpt] -> Eval Value
-eval traceon ctxt maxred ntimes genv tm opts = ev ntimes [] True [] tm where
+eval traceon ctxt ntimes genv tm opts = ev ntimes [] True [] tm where
     spec = Spec `elem` opts
     simpl = Simplify True `elem` opts
     atRepl = AtREPL `elem` opts
+    hnf = HNF `elem` opts
 
     canSimplify inl inr n stk 
        =    (Simplify False `elem` opts && (not inl || elem n stk))
          || (Simplify True `elem` opts && (not inr || elem n stk))
 
     ev ntimes stk top env (P _ n ty)
-        | Just (Let t v) <- lookup n genv = do when (not atRepl) $ step maxred
-                                               ev ntimes stk top env v 
+        | Just (Let t v) <- lookup n genv = ev ntimes stk top env v 
     ev ntimes_in stk top env (P Ref n ty) 
+      | not top && hnf = liftM (VP Ref n) (ev ntimes stk top env ty)
       | (True, ntimes) <- usable simpl n ntimes_in
          = do let val = lookupDefAcc Nothing n atRepl ctxt 
-              when (not atRepl) $ step maxred
               case val of
                 [(Function _ tm, Public)] -> 
                        ev ntimes (n:stk) True env tm
                 [(TyDecl nt ty, _)] -> do vty <- ev ntimes stk True env ty
                                           return $ VP nt n vty
-                [(CaseOp inl inr _ _ _ [] tree _ _, Public)] -> -- unoptimised version
+                [(CaseOp inl inr _ _ _ [] tree _ _, acc)] 
+                     | acc == Public || simpl -> -- unoptimised version
                    if canSimplify inl inr n stk
                         then liftM (VP Ref n) (ev ntimes stk top env ty)
                         else do c <- evCase ntimes (n:stk) top env [] [] tree 
@@ -186,59 +169,62 @@ eval traceon ctxt maxred ntimes genv tm opts = ev ntimes [] True [] tm where
     ev ntimes stk top env (V i) | i < length env = return $ env !! i
                      | otherwise      = return $ VV i 
     ev ntimes stk top env (Bind n (Let t v) sc)
-        | not simpl || vinstances 0 sc < 2
+--         | not simpl || vinstances 0 sc < 2
            = do v' <- ev ntimes stk top env v --(finalise v)
-                when (not atRepl) $ step maxred
                 sc' <- ev ntimes stk top (v' : env) sc
                 wknV (-1) sc'
-        | otherwise
+{-        | otherwise -- put this back when the Bind works properly
            = do t' <- ev ntimes stk top env t
                 v' <- ev ntimes stk top env v --(finalise v)
-                when (not atRepl) $ step maxred
+                -- use Tmp as a placeholder, then make it a variable reference
+                -- again when evaluation finished
                 sc' <- ev ntimes stk top (v' : env) sc
-                return $ VBind n (Let t' v') (\x -> return sc')
+                return $ VBind n (Let t' v') (\x -> return sc') -}
     ev ntimes stk top env (Bind n (NLet t v) sc)
            = do t' <- ev ntimes stk top env (finalise t)
                 v' <- ev ntimes stk top env (finalise v)
-                when (not atRepl) $ step maxred
                 sc' <- ev ntimes stk top (v' : env) sc
                 return $ VBind n (Let t' v') (\x -> return sc')
     ev ntimes stk top env (Bind n b sc) 
            = do b' <- vbind env b
-                when (not atRepl) $ step maxred
-                return $ VBind n b' (\x -> ev ntimes stk top (x:env) sc)
-       where vbind env t = fmapMB (\tm -> ev ntimes stk top env (finalise tm)) t
+                return $ VBind n b' (\x -> ev ntimes stk False (x:env) sc)
+       where vbind env t 
+                 | simpl 
+                     = fmapMB (\tm -> ev ((MN 0 "STOP", 0) : ntimes) 
+                                         stk top env (finalise tm)) t 
+                 | otherwise 
+                     = fmapMB (\tm -> ev ntimes stk top env (finalise tm)) t
 --     ev ntimes stk top env (App (App (P _ laz _) _) a)
 --         | laz == UN "lazy"
 --            = trace (showEnvDbg genv a) $ ev ntimes stk top env a
     ev ntimes stk top env (App f a) 
-           = do f' <- ev ntimes stk top env f
+           = do f' <- ev ntimes stk False env f
                 a' <- ev ntimes stk False env a
-                when (not atRepl) $ step maxred
                 evApply ntimes stk top env [a'] f'
     ev ntimes stk top env (Constant c) = return $ VConstant c
     ev ntimes stk top env Erased    = return VErased
-    ev ntimes stk top env (Set i)   = return $ VSet i
+    ev ntimes stk top env (TType i)   = return $ VType i
     
     evApply ntimes stk top env args (VApp f a) = 
             evApply ntimes stk top env (a:args) f
-    evApply ntimes stk top env args f = do when (not atRepl) $ step maxred
-                                           apply ntimes stk top env f args
+    evApply ntimes stk top env args f = apply ntimes stk top env f args
 
-    apply ntimes stk top env f as 
-        | length stk > threshold = return $ unload env f as
     apply ntimes stk top env (VBind n (Lam t) sc) (a:as) 
         = do a' <- sc a
              app <- apply ntimes stk top env a' as 
              wknV (-1) app
 --     apply ntimes stk False env f args
 --         | spec = specApply ntimes stk env f args 
-    apply ntimes_in stk top env f@(VP Ref n ty)        args
+    apply ntimes_in stk top env f@(VP Ref n ty) args
+      | not top && hnf = case args of
+                            [] -> return f
+                            _ -> return $ unload env f args
       | (True, ntimes) <- usable simpl n ntimes_in
         = traceWhen traceon (show stk) $
           do let val = lookupDefAcc Nothing n atRepl ctxt
              case val of
-                [(CaseOp inl inr _ _ _ ns tree _ _, Public)]  ->
+                [(CaseOp inl inr _ _ _ ns tree _ _, acc)]
+                     | acc == Public -> -- unoptimised version
                   if canSimplify inl inr n stk
                      then return $ unload env (VP Ref n ty) args
                      else do c <- evCase ntimes (n:stk) top env ns args tree
@@ -273,7 +259,8 @@ eval traceon ctxt maxred ntimes genv tm opts = ev ntimes [] True [] tm where
         | length ns <= length args 
              = do let args' = take (length ns) args
                   let rest  = drop (length ns) args
-                  t <- evTree ntimes stk top env (zipWith (\n t -> (n, t)) ns args') tree
+                  t <- evTree ntimes stk top env 
+                              (zipWith (\n t -> (n, t)) ns args') tree
                   return (t, rest)
         | otherwise = return (Nothing, args)
 
@@ -282,7 +269,8 @@ eval traceon ctxt maxred ntimes genv tm opts = ev ntimes [] True [] tm where
     evTree ntimes stk top env amap (UnmatchedCase str) = return Nothing
     evTree ntimes stk top env amap (STerm tm) 
         = do let etm = pToVs (map fst amap) tm
-             etm' <- ev ntimes stk top (map snd amap ++ env) etm
+             etm' <- ev ntimes stk (not (conHeaded tm)) 
+                                   (map snd amap ++ env) etm
              return $ Just etm'
     evTree ntimes stk top env amap (Case n alts)
         = case lookup n amap of
@@ -294,6 +282,10 @@ eval traceon ctxt maxred ntimes genv tm opts = ev ntimes [] True [] tm where
                                         Just (altmap, sc) -> evTree ntimes stk top env altmap sc
                                         _ -> return Nothing
             _ -> return Nothing
+
+    conHeaded tm@(App _ _) 
+        | (P (DCon _ _) _ _, args) <- unApply tm = True
+    conHeaded t = False
 
     chooseAlt' ntimes  stk env _ (f, args) alts amap
         = do f' <- apply ntimes stk True env f args
@@ -338,6 +330,16 @@ eval traceon ctxt maxred ntimes genv tm opts = ev ntimes [] True [] tm where
     getValArgs' (VApp f a) as = getValArgs' f (a:as)
     getValArgs' f as = (f, as)
 
+tmpToV i (VTmp 0) = return $ VV i
+tmpToV i (VP nt n v) = liftM (VP nt n) (tmpToV i v)
+                          
+tmpToV i (VBind n b sc) = do b' <- fmapMB (tmpToV i) b
+                             let sc' = \x -> do x' <- sc x
+                                                tmpToV (i + 1) x'
+                             return (VBind n b' sc')
+tmpToV i (VApp f a) = liftM2 VApp (tmpToV i f) (tmpToV i a)
+tmpToV i x = return x
+
 class Quote a where
     quote :: Int -> a -> Eval (TT Name)
 
@@ -349,7 +351,7 @@ instance Quote Value where
                                 liftM (Bind n b') (quote (i+1) sc')
        where quoteB t = fmapMB (quote i) t
     quote i (VApp f a)     = liftM2 App (quote i f) (quote i a)
-    quote i (VSet u)       = return $ Set u
+    quote i (VType u)       = return $ TType u
     quote i VErased        = return $ Erased
     quote i (VConstant c)  = return $ Constant c
     quote i (VTmp x)       = return $ V (i - x - 1)
@@ -367,7 +369,7 @@ instance Quote HNF where
         where iEnv [] a = return a
               iEnv (x:xs) a = do x' <- quote i x
                                  iEnv xs (weakenTm (-1) (instantiate x' a))
-    quote i (HSet u)        = return $ Set u
+    quote i (HType u)        = return $ TType u
     quote i (HConstant c)   = return $ Constant c
     quote i (HTmp x)        = return $ V (i - x - 1)
 
@@ -417,7 +419,7 @@ eval_hnf ctxt statics genv tm = ev [] tm where
       where hbind env t = fmapMB (\tm -> ev env (finalise tm)) t
     ev env (App f a) = evApply env [a] f
     ev env (Constant c) = return $ HConstant c
-    ev env (Set i) = return $ HSet i
+    ev env (TType i) = return $ HType i
 
     evApply env args (App f a) = evApply env (a : args) f
     evApply env args f = do f' <- ev env f
@@ -505,6 +507,11 @@ eval_hnf ctxt statics genv tm = ev [] tm where
     findConst ChType  (ConCase n 3 [] v : xs) = Just v 
     findConst StrType (ConCase n 4 [] v : xs) = Just v 
     findConst PtrType (ConCase n 5 [] v : xs) = Just v 
+    findConst BIType  (ConCase n 6 [] v : xs) = Just v
+    findConst B8Type  (ConCase n 7 [] v : xs) = Just v
+    findConst B16Type (ConCase n 8 [] v : xs) = Just v
+    findConst B32Type (ConCase n 9 [] v : xs) = Just v
+    findConst B64Type (ConCase n 10 [] v : xs) = Just v
     findConst c (_ : xs) = findConst c xs
 
     getValArgs (HApp t env args) = (t, env, args)
@@ -516,7 +523,7 @@ convEq :: Context -> TT Name -> TT Name -> StateT UCs TC Bool
 convEq ctxt = ceq [] where
     ceq :: [(Name, Name)] -> TT Name -> TT Name -> StateT UCs TC Bool
     ceq ps (P xt x _) (P yt y _) 
-        | (xt == yt && x ==y ) || (x, y) `elem` ps || (y,x) `elem` ps = return True
+        | x == y || (x, y) `elem` ps || (y,x) `elem` ps = return True
         | otherwise = sameDefs ps x y
     ceq ps (V x)      (V y)      = return (x == y)
     ceq ps (Bind _ xb xs) (Bind _ yb ys) 
@@ -527,9 +534,9 @@ convEq ctxt = ceq [] where
             ceqB ps b b' = ceq ps (binderTy b) (binderTy b')
     ceq ps (App fx ax) (App fy ay)   = liftM2 (&&) (ceq ps fx fy) (ceq ps ax ay)
     ceq ps (Constant x) (Constant y) = return (x == y)
-    ceq ps (Set x) (Set y)           = do (v, cs) <- get
-                                          put (v, ULE x y : cs)
-                                          return True
+    ceq ps (TType x) (TType y)           = do (v, cs) <- get
+                                              put (v, ULE x y : cs)
+                                              return True
     ceq ps Erased _ = return True
     ceq ps _ Erased = return True
     ceq ps _ _ = return False
@@ -592,10 +599,12 @@ instance Show Def where
     show (Function ty tm) = "Function: " ++ show (ty, tm)
     show (TyDecl nt ty) = "TyDecl: " ++ show nt ++ " " ++ show ty
     show (Operator ty _ _) = "Operator: " ++ show ty
-    show (CaseOp _ _ ty ps_in ps ns sc ns' sc') 
+    show (CaseOp inlc inlr ty ps_in ps ns sc ns' sc') 
         = "Case: " ++ show ty ++ " " ++ show ps ++ "\n" ++ 
                                         show ns ++ " " ++ show sc ++ "\n" ++
-                                        show ns' ++ " " ++ show sc'
+                                        show ns' ++ " " ++ show sc' ++ "\n" ++
+            if inlc then "Inlinable\n" else "Not inlinable\n"
+
 -- We need this for serialising Def. Fortunately, it never gets used because
 -- we'll never serialise a primitive operator
 
@@ -618,7 +627,7 @@ data Totality = Total [Int] -- well-founded arguments
     deriving Eq
 
 data PReason = Other [Name] | Itself | NotCovering | NotPositive | UseUndef Name
-             | Mutual [Name] | NotProductive
+             | BelieveMe | Mutual [Name] | NotProductive
     deriving (Show, Eq)
 
 instance Show Totality where
@@ -629,6 +638,7 @@ instance Show Totality where
     show (Partial NotCovering) = "not total as there are missing cases"
     show (Partial NotPositive) = "not strictly positive"
     show (Partial NotProductive) = "not productive"
+    show (Partial BelieveMe) = "not total due to use of believe_me in proof"
     show (Partial (Other ns)) = "possibly not total due to: " ++ showSep ", " (map show ns)
     show (Partial (Mutual ns)) = "possibly not total due to recursive path " ++ 
                                  showSep " --> " (map show ns)
@@ -656,7 +666,7 @@ initContext = MkContext [] 0 emptyContext
 ctxtAlist :: Context -> [(Name, Def)]
 ctxtAlist ctxt = map (\(n, (d, a, t)) -> (n, d)) $ toAlist (definitions ctxt)
 
-veval ctxt env t = evalState (eval False ctxt threshold [] env t []) initEval
+veval ctxt env t = evalState (eval False ctxt [] env t []) initEval
 
 addToCtxt :: Name -> Term -> Type -> Context -> Context
 addToCtxt n tm ty uctxt 
@@ -701,12 +711,12 @@ addDatatype (Data n tag ty cons) uctxt
               addCons (tag+1) cons (addDef n
                   (TyDecl (DCon tag (arity ty')) ty, Public, Unchecked) ctxt)
 
-addCasedef :: Name -> Bool -> Bool -> Bool -> 
+addCasedef :: Name -> Bool -> Bool -> Bool -> Bool ->
               [Either Term (Term, Term)] -> 
               [([Name], Term, Term)] -> 
               [([Name], Term, Term)] ->
               Type -> Context -> Context
-addCasedef n alwaysInline tcase covering ps_in ps psrt ty uctxt 
+addCasedef n alwaysInline tcase covering asserted ps_in ps psrt ty uctxt 
     = let ctxt = definitions uctxt
           access = case lookupDefAcc Nothing n False uctxt of
                         [(_, acc)] -> acc
@@ -714,8 +724,10 @@ addCasedef n alwaysInline tcase covering ps_in ps psrt ty uctxt
           ctxt' = case (simpleCase tcase covering CompileTime (FC "" 0) ps, 
                         simpleCase tcase covering RunTime (FC "" 0) psrt) of
                     (OK (CaseDef args sc _), OK (CaseDef args' sc' _)) -> 
-                       let inl = alwaysInline in
-                           addDef n (CaseOp inl (inl || small n sc')
+                       let inl = alwaysInline 
+                           inlc = (inl || small n args sc') && (not asserted) 
+                           inlr = inl || small n args sc' in
+                           addDef n (CaseOp inlc inlr 
                                             ty ps_in ps args sc args' sc',
                                       access, Unchecked) ctxt in
           uctxt { definitions = ctxt' }

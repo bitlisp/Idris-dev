@@ -38,7 +38,7 @@ delab' ist tm fullname = de [] tm
     de env (Constant i) = PConstant i
     de env Erased = Placeholder
     de env Impossible = Placeholder
-    de env (Set i) = PSet 
+    de env (TType i) = PType 
 
     dens x | fullname = x
     dens ns@(NS n _) = case lookupCtxt Nothing n (idris_implicits ist) of
@@ -77,15 +77,18 @@ pshow i (InternalMsg s) = "INTERNAL ERROR: " ++ show s ++
    "\nThis is probably a bug, or a missing error message.\n" ++
    "Please consider reporting at " ++ bugaddr
 pshow i (CantUnify _ x y e sc s) 
-    = "Can't unify " ++ show (delab i x)
-        ++ " with " ++ show (delab i y) ++
+    = let imps = opt_showimp (idris_options i) in
+        "Can't unify " ++ showImp imps (delab i x)
+          ++ " with " ++ showImp imps (delab i y) ++
 --         " (" ++ show x ++ " and " ++ show y ++ ") " ++
         case e of
             Msg "" -> ""
             _ -> "\n\nSpecifically:\n\t" ++ pshow i e ++ 
                  if (opt_errContext (idris_options i)) then showSc i sc else ""
 pshow i (CantConvert x y env) 
-    = "Can't unify " ++ show (delab i x) ++ " with " ++ show (delab i y) ++
+    = let imps = opt_showimp (idris_options i) in
+          "Can't convert " ++ showImp imps (delab i x) ++ " with " 
+                 ++ showImp imps (delab i y) ++
                  if (opt_errContext (idris_options i)) then showSc i env else ""
 pshow i (InfiniteUnify x tm env)
     = "Unifying " ++ showbasic x ++ " and " ++ show (delab i tm) ++ 
@@ -102,6 +105,9 @@ pshow i (IncompleteTerm t) = "Incomplete term " ++ showImp True (delab i t)
 pshow i UniverseError = "Universe inconsistency"
 pshow i ProgramLineComment = "Program line next to comment"
 pshow i (Inaccessible n) = show n ++ " is not an accessible pattern variable"
+pshow i (NonCollapsiblePostulate n) 
+    = "The return type of postulate " ++ show n ++ " is not collapsible"
+pshow i (AlreadyDefined n) = show n ++ " is already defined"
 pshow i (At f e) = show f ++ ":" ++ pshow i e
 
 showSc i [] = ""

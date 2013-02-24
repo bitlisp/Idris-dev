@@ -14,7 +14,7 @@ import Prelude.Nat
 
 %access public
 
-abstract data MaxiphobicHeap : Set -> Set where
+abstract data MaxiphobicHeap : Type -> Type where
   Empty : MaxiphobicHeap a
   Node  : Nat -> MaxiphobicHeap a -> a -> MaxiphobicHeap a -> MaxiphobicHeap a
 
@@ -66,6 +66,7 @@ orderBySize left centre right =
     largest : Nat
     largest = maximum (size left) $ maximum (size centre) (size right)
 
+%assert_total -- relies on orderBySize doing the right thing
 merge : Ord a => MaxiphobicHeap a -> MaxiphobicHeap a -> MaxiphobicHeap a
 merge Empty               right             = right
 merge left                Empty             = left
@@ -103,8 +104,9 @@ toList : Ord a => MaxiphobicHeap a -> List a
 toList Empty          = []
 toList (Node s l e r) = toList' (Node s l e r) refl
   where
+    %assert_total -- relies on deleteMinimum making heap smaller
     toList' : Ord a => (h : MaxiphobicHeap a) -> (isEmpty h = False) -> List a
-    toList' heap p = findMinimum heap p :: (toList $ deleteMinimum heap p)
+    toList' heap p = findMinimum heap p :: (toList (deleteMinimum heap p))
 
 fromList : Ord a => List a -> MaxiphobicHeap a
 fromList = foldr insert empty
@@ -142,7 +144,7 @@ instance Ord a => JoinSemilattice (MaxiphobicHeap a) where
 total absurdBoolDischarge : False = True -> _|_
 absurdBoolDischarge p = replace {P = disjointTy} p ()
   where
-    total disjointTy : Bool -> Set
+    total disjointTy : Bool -> Type
     disjointTy False  = ()
     disjointTy True   = _|_
 

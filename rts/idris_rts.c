@@ -8,6 +8,7 @@
 
 #include "idris_rts.h"
 #include "idris_gc.h"
+#include "idris_bitstring.h"
 
 VM* init_vm(int stack_size, size_t heap_size, 
             int max_threads, // not implemented yet
@@ -87,8 +88,8 @@ void* allocate(VM* vm, size_t size, int outerlock) {
     if ((size & 7)!=0) {
 	size = 8 + ((size >> 3) << 3);
     }
-    vm->allocations += size + sizeof(size_t);
     if (vm -> heap_next + size < vm -> heap_end) {
+        vm->allocations += size + sizeof(size_t);
         void* ptr = (void*)(vm->heap_next + sizeof(size_t));
         *((size_t*)(vm->heap_next)) = size + sizeof(size_t);
         vm -> heap_next += size + sizeof(size_t);
@@ -107,6 +108,7 @@ void* allocate(VM* vm, size_t size, int outerlock) {
 
 }
 
+/* Now a macro
 void* allocCon(VM* vm, int arity, int outer) {
     Closure* cl = allocate(vm, sizeof(Closure) + sizeof(VAL)*arity,
                                outer);
@@ -117,6 +119,7 @@ void* allocCon(VM* vm, int arity, int outer) {
 //    printf("%p\n", cl);
     return (void*)cl;
 }
+*/
 
 VAL MKFLOAT(VM* vm, double val) {
     Closure* cl = allocate(vm, sizeof(Closure), 0);
@@ -166,25 +169,6 @@ VAL MKPTRc(VM* vm, void* ptr) {
     return cl;
 }
 
-VAL MKCON(VM* vm, VAL cl, int tag, int arity, ...) {
-    int i;
-    va_list args;
-
-    va_start(args, arity);
-
-//    Closure* cl = allocCon(vm, arity);
-    cl -> info.c.tag = tag;
-    cl -> info.c.arity = arity;
-    // printf("... %p %p\n", cl, argptr);
-
-    for (i = 0; i < arity; ++i) {
-        VAL v = va_arg(args, VAL);
-        cl->info.c.args[i] = v;
-    }
-    va_end(args);
-    return cl;
-}
-
 void PROJECT(VM* vm, VAL r, int loc, int arity) {
     int i;
     for(i = 0; i < arity; ++i) {
@@ -223,8 +207,8 @@ void dumpVal(VAL v) {
     }
     switch(GETTY(v)) {
     case CON:
-        printf("%d[", v->info.c.tag);
-        for(i = 0; i < v->info.c.arity; ++i) {
+        printf("%d[", TAG(v));
+        for(i = 0; i < ARITY(v); ++i) {
             dumpVal(v->info.c.args[i]);
         }
         printf("] ");
@@ -432,7 +416,7 @@ void* vmThread(VM* callvm, func f, VAL arg) {
 // VM is assumed to be a different vm from the one x lives on 
 
 VAL copyTo(VM* vm, VAL x) {
-    int i;
+    int i, ar;
     VAL* argptr;
     Closure* cl;
     if (x==NULL || ISINT(x)) {
@@ -440,12 +424,11 @@ VAL copyTo(VM* vm, VAL x) {
     }
     switch(GETTY(x)) {
     case CON:
-        cl = allocCon(vm, x->info.c.arity, 1);
-        cl->info.c.tag = x->info.c.tag;
-        cl->info.c.arity = x->info.c.arity;
+        ar = CARITY(x);
+        allocCon(cl, vm, CTAG(x), ar, 1);
 
         argptr = (VAL*)(cl->info.c.args);
-        for(i = 0; i < x->info.c.arity; ++i) {
+        for(i = 0; i < ar; ++i) {
             *argptr = copyTo(vm, *((VAL*)(x->info.c.args)+i)); // recursive version
             argptr++;
         }
@@ -461,6 +444,18 @@ VAL copyTo(VM* vm, VAL x) {
         break;
     case PTR:
         cl = MKPTRc(vm, x->info.ptr);
+        break;
+    case BITS8:
+        cl = idris_b8CopyForGC(vm, x);
+        break;
+    case BITS16:
+        cl = idris_b16CopyForGC(vm, x);
+        break;
+    case BITS32:
+        cl = idris_b32CopyForGC(vm, x);
+        break;
+    case BITS64:
+        cl = idris_b64CopyForGC(vm, x);
         break;
     default:
         assert(0); // We're in trouble if this happens...

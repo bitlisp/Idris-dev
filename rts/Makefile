@@ -1,8 +1,8 @@
 include ../config.mk
 
-OBJS = idris_rts.o idris_gc.o idris_gmp.o idris_stdfgn.o
-HDRS = idris_rts.h idris_gc.h idris_gmp.h idris_stdfgn.h
-CFLAGS = -O2 -Wall -Werror
+OBJS = idris_rts.o idris_gc.o idris_gmp.o idris_stdfgn.o idris_bitstring.o
+HDRS = idris_rts.h idris_gc.h idris_gmp.h idris_stdfgn.h idris_bitstring.h
+CFLAGS = -O2 -Wall 
 ifneq ($(GMP_INCLUDE_DIR),)
   CFLAGS += -isystem $(GMP_INCLUDE_DIR)
 endif

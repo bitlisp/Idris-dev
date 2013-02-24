@@ -12,8 +12,15 @@ data ProcID msg = MkPID Ptr
 -- Type safe message passing programs. Parameterised over the type of
 -- message which can be send, and the return type.
 
-data Process : (msgType : Set) -> Set -> Set where
+data Process : (msgType : Type) -> Type -> Type where
      lift : IO a -> Process msg a
+
+instance Functor (Process msg) where
+     fmap f (lift a) = lift (fmap f a)
+
+instance Applicative (Process msg) where
+     pure = lift . return
+     (lift f) <$> (lift a) = lift (f <$> a)
 
 instance Monad (Process msg) where
      return = lift . return

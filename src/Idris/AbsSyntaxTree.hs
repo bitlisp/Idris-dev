@@ -136,11 +136,16 @@ idrisInit = IState initContext [] [] emptyContext emptyContext emptyContext
 
 -- The monad for the main REPL - reading and processing files and updating 
 -- global state (hence the IO inner monad).
-type Idris = StateT IState (InputT IO)
+type Idris = StateT IState IO
 
 -- Commands in the REPL
 
-data Target = ViaC | ViaLLVM | ViaJava
+data Target = ViaC
+            | ViaJava
+            | ViaNode
+            | ViaJavaScript
+            | ViaLLVM
+            | Bytecode
     deriving (Show, Eq)
 
 data Command = Quit
@@ -231,7 +236,11 @@ instance Show Fixity where
     show (PrefixN i) = "prefix " ++ show i
 
 data FixDecl = Fix Fixity String 
-    deriving (Show, Eq)
+    deriving Eq
+
+instance Show FixDecl where
+  show (Fix f s) = show f ++ " " ++ s
+
 {-! 
 deriving instance Binary FixDecl 
 !-}
@@ -285,31 +294,33 @@ type FnOpts = [FnOpt]
 inlinable :: FnOpts -> Bool
 inlinable = elem Inlinable
 
-data PDecl' t = PFix     FC Fixity [String] -- fixity declaration
-              | PTy      String SyntaxInfo FC FnOpts Name t   -- type declaration
-              | PClauses FC FnOpts Name [PClause' t]   -- pattern clause
-              | PCAF     FC Name t -- top level constant
-              | PData    String SyntaxInfo FC Bool -- codata
-                                       (PData' t)  -- data declaration
-              | PParams  FC [(Name, t)] [PDecl' t] -- params block
-              | PNamespace String [PDecl' t] -- new namespace
-              | PRecord  String SyntaxInfo FC Name t String Name t     -- record declaration
-              | PClass   String SyntaxInfo FC 
-                         [t] -- constraints
-                         Name
-                         [(Name, t)] -- parameters
-                         [PDecl' t] -- declarations
-              | PInstance SyntaxInfo FC [t] -- constraints
-                                        Name -- class
-                                        [t] -- parameters
-                                        t -- full instance type
-                                        (Maybe Name) -- explicit name
-                                        [PDecl' t]
-              | PDSL     Name (DSL' t)
-              | PSyntax  FC Syntax
-              | PMutual  FC [PDecl' t]
-              | PDirective (Idris ())
-    deriving Functor
+data PDecl' t 
+   = PFix     FC Fixity [String] -- fixity declaration
+   | PTy      String SyntaxInfo FC FnOpts Name t   -- type declaration
+   | PPostulate String SyntaxInfo FC FnOpts Name t
+   | PClauses FC FnOpts Name [PClause' t]   -- pattern clause
+   | PCAF     FC Name t -- top level constant
+   | PData    String SyntaxInfo FC Bool -- codata
+                            (PData' t)  -- data declaration
+   | PParams  FC [(Name, t)] [PDecl' t] -- params block
+   | PNamespace String [PDecl' t] -- new namespace
+   | PRecord  String SyntaxInfo FC Name t String Name t     -- record declaration
+   | PClass   String SyntaxInfo FC 
+              [t] -- constraints
+              Name
+              [(Name, t)] -- parameters
+              [PDecl' t] -- declarations
+   | PInstance SyntaxInfo FC [t] -- constraints
+                             Name -- class
+                             [t] -- parameters
+                             t -- full instance type
+                             (Maybe Name) -- explicit name
+                             [PDecl' t]
+   | PDSL     Name (DSL' t)
+   | PSyntax  FC Syntax
+   | PMutual  FC [PDecl' t]
+   | PDirective (Idris ())
+  deriving Functor
 {-!
 deriving instance Binary PDecl'
 !-}
@@ -344,6 +355,7 @@ type PClause = PClause' PTerm
 declared :: PDecl -> [Name]
 declared (PFix _ _ _) = []
 declared (PTy _ _ _ _ n t) = [n]
+declared (PPostulate _ _ _ _ n t) = [n]
 declared (PClauses _ _ n _) = [] -- not a declaration
 declared (PRecord _ _ _ n _ _ c _) = [n, c]
 declared (PData _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
@@ -351,11 +363,25 @@ declared (PData _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
 declared (PParams _ _ ds) = concatMap declared ds
 declared (PMutual _ ds) = concatMap declared ds
 declared (PNamespace _ ds) = concatMap declared ds
+
+-- get the names declared, not counting nested parameter blocks
+tldeclared :: PDecl -> [Name]
+tldeclared (PFix _ _ _) = []
+tldeclared (PTy _ _ _ _ n t) = [n]
+tldeclared (PPostulate _ _ _ _ n t) = [n]
+tldeclared (PClauses _ _ n _) = [] -- not a declaration
+tldeclared (PRecord _ _ _ n _ _ c _) = [n, c]
+tldeclared (PData _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
+   where fstt (_, a, _, _) = a
+tldeclared (PParams _ _ ds) = [] 
+tldeclared (PMutual _ ds) = concatMap tldeclared ds
+tldeclared (PNamespace _ ds) = concatMap tldeclared ds
 -- declared (PImport _) = []
 
 defined :: PDecl -> [Name]
 defined (PFix _ _ _) = []
 defined (PTy _ _ _ _ n t) = []
+defined (PPostulate _ _ _ _ n t) = []
 defined (PClauses _ _ n _) = [n] -- not a declaration
 defined (PRecord _ _ _ n _ _ c _) = [n, c]
 defined (PData _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
@@ -390,6 +416,7 @@ updateNs ns t = mapPT updateRef t
 
 data PTerm = PQuote Raw
            | PRef FC Name
+           | PInferRef FC Name -- a name to be defined later
            | PPatvar FC Name
            | PLam Name PTerm PTerm
            | PPi  Plicity Name PTerm PTerm
@@ -406,7 +433,7 @@ data PTerm = PQuote Raw
            | PDPair FC PTerm PTerm PTerm
            | PAlternative Bool [PTerm] -- True if only one may work
            | PHidden PTerm -- irrelevant or hidden pattern
-           | PSet
+           | PType
            | PConstant Const
            | Placeholder
            | PDoBlock [PDo]
@@ -442,13 +469,16 @@ mapPT f t = f (mpt t) where
 
 
 data PTactic' t = Intro [Name] | Intros | Focus Name
-                | Refine Name [Bool] | Rewrite t | LetTac Name t
+                | Refine Name [Bool] | Rewrite t 
+                | LetTac Name t | LetTacTy Name t t
                 | Exact t | Compute | Trivial
                 | Solve
                 | Attack
                 | ProofState | ProofTerm | Undo
                 | Try (PTactic' t) (PTactic' t)
                 | TSeq (PTactic' t) (PTactic' t)
+                | ReflectTac t -- see Language.Reflection module
+                | GoalType String (PTactic' t)
                 | Qed | Abandon
     deriving (Show, Eq, Functor)
 {-! 
@@ -499,6 +529,7 @@ type PDo = PDo' PTerm
 -- The priority gives a hint as to elaboration order. Best to elaborate
 -- things early which will help give a more concrete type to other
 -- variables, e.g. a before (interpTy a).
+-- TODO: priority no longer serves any purpose, drop it!
 
 data PArg' t = PImp { priority :: Int, 
                       lazyarg :: Bool, pname :: Name, getTm :: t,
@@ -554,7 +585,9 @@ deriving instance Binary OptInfo
 !-}
 
 
-data TypeInfo = TI { con_names :: [Name], codata :: Bool }
+data TypeInfo = TI { con_names :: [Name], 
+                     codata :: Bool,
+                     param_pos :: [Int] }
     deriving Show
 {-!
 deriving instance Binary TypeInfo
@@ -653,6 +686,7 @@ instance Show PData where
 
 showDeclImp _ (PFix _ f ops) = show f ++ " " ++ showSep ", " ops
 showDeclImp t (PTy _ _ _ _ n ty) = show n ++ " : " ++ showImp t ty
+showDeclImp t (PPostulate _ _ _ _ n ty) = show n ++ " : " ++ showImp t ty
 showDeclImp _ (PClauses _ _ n c) = showSep "\n" (map show c)
 showDeclImp _ (PData _ _ _ _ d) = show d
 showDeclImp _ (PParams f ns ps) = "parameters " ++ show ns ++ "\n" ++ 
@@ -849,7 +883,7 @@ prettyImp impl = prettySe 10
         where
           prettyAs =
             foldr (\l -> \r -> l <+> text "," <+> r) empty $ map (prettySe 10) as
-    prettySe p PSet = text "Set"
+    prettySe p PType = text "Type"
     prettySe p (PConstant c) = pretty c
     -- XXX: add pretty for tactics
     prettySe p (PProof ts) =
@@ -883,6 +917,7 @@ showImp :: Bool -> PTerm -> String
 showImp impl tm = se 10 tm where
     se p (PQuote r) = "![" ++ show r ++ "]"
     se p (PPatvar fc n) = show n
+    se p (PInferRef fc n) = "!" ++ show n -- ++ "[" ++ show fc ++ "]"
     se p (PRef fc n) = if impl then show n -- ++ "[" ++ show fc ++ "]"
                                else showbasic n
       where showbasic n@(UN _) = show n
@@ -896,7 +931,7 @@ showImp impl tm = se 10 tm where
     se p (PPi (Exp l s _) n ty sc)
         | n `elem` allNamesIn sc || impl
                                   = bracket p 2 $
-                                    if l then "|(" else "(" ++ 
+                                    (if l then "|(" else "(") ++ 
                                     show n ++ " : " ++ se 10 ty ++ 
                                     ") " ++ st ++
                                     "-> " ++ se 10 sc
@@ -905,7 +940,7 @@ showImp impl tm = se 10 tm where
                     Static -> "[static] "
                     _ -> ""
     se p (PPi (Imp l s _) n ty sc)
-        | impl = bracket p 2 $ if l then "|{" else "{" ++ 
+        | impl = bracket p 2 $ (if l then "|{" else "{") ++ 
                                show n ++ " : " ++ se 10 ty ++ 
                                "} " ++ st ++ "-> " ++ se 10 sc
         | otherwise = se 10 sc
@@ -940,7 +975,7 @@ showImp impl tm = se 10 tm where
     se p (PPair _ l r) = "(" ++ se 10 l ++ ", " ++ se 10 r ++ ")"
     se p (PDPair _ l t r) = "(" ++ se 10 l ++ " ** " ++ se 10 r ++ ")"
     se p (PAlternative a as) = "(|" ++ showSep " , " (map (se 10) as) ++ "|)"
-    se p PSet = "Set"
+    se p PType = "Type"
     se p (PConstant c) = show c
     se p (PProof ts) = "proof { " ++ show ts ++ "}"
     se p (PTactics ts) = "tactics { " ++ show ts ++ "}"
@@ -984,7 +1019,7 @@ instance Sized PTerm where
   size (PDPair fs left ty right) = 1 + size left + size ty + size right
   size (PAlternative a alts) = 1 + size alts
   size (PHidden hidden) = size hidden
-  size PSet = 1
+  size PType = 1
   size (PConstant const) = 1 + size const
   size Placeholder = 1
   size (PDoBlock dos) = 1 + size dos
@@ -994,6 +1029,12 @@ instance Sized PTerm where
   size (PProof tactics) = size tactics
   size (PElabError err) = size err
   size PImpossible = 1
+
+getPArity :: PTerm -> Int
+getPArity (PPi _ _ _ sc) = 1 + getPArity sc
+getPArity _ = 0
+
+-- Return all names, free or globally bound, in the given term.
 
 allNamesIn :: PTerm -> [Name]
 allNamesIn tm = nub $ ni [] tm 
@@ -1013,6 +1054,8 @@ allNamesIn tm = nub $ ni [] tm
     ni env (PAlternative a ls) = concatMap (ni env) ls
     ni env _               = []
 
+-- Return names which are free in the given term.
+
 namesIn :: [(Name, PTerm)] -> IState -> PTerm -> [Name]
 namesIn uvars ist tm = nub $ ni [] tm 
   where
@@ -1021,6 +1064,29 @@ namesIn uvars ist tm = nub $ ni [] tm
             = case lookupTy Nothing n (tt_ctxt ist) of
                 [] -> [n]
                 _ -> if n `elem` (map fst uvars) then [n] else []
+    ni env (PApp _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)
+    ni env (PCase _ c os)  = ni env c ++ concatMap (ni env) (map snd os)
+    ni env (PLam n ty sc)  = ni env ty ++ ni (n:env) sc
+    ni env (PPi _ n ty sc) = ni env ty ++ ni (n:env) sc
+    ni env (PEq _ l r)     = ni env l ++ ni env r
+    ni env (PTyped l r)    = ni env l ++ ni env r
+    ni env (PPair _ l r)   = ni env l ++ ni env r
+    ni env (PDPair _ (PRef _ n) t r) = ni env t ++ ni (n:env) r
+    ni env (PDPair _ l t r) = ni env l ++ ni env t ++ ni env r
+    ni env (PAlternative a as) = concatMap (ni env) as
+    ni env (PHidden tm)    = ni env tm
+    ni env _               = []
+
+-- Return which of the given names are used in the given term.
+
+usedNamesIn :: [Name] -> IState -> PTerm -> [Name]
+usedNamesIn vars ist tm = nub $ ni [] tm 
+  where
+    ni env (PRef _ n)        
+        | n `elem` vars && not (n `elem` env) 
+            = case lookupTy Nothing n (tt_ctxt ist) of
+                [] -> [n]
+                _ -> []
     ni env (PApp _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)
     ni env (PCase _ c os)  = ni env c ++ concatMap (ni env) (map snd os)
     ni env (PLam n ty sc)  = ni env ty ++ ni (n:env) sc

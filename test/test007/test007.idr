@@ -4,7 +4,7 @@ data Expr = Var String
           | Val Int
           | Add Expr Expr
 
-data Eval : Set -> Set where
+data Eval : Type -> Type where
    MkEval : (List (String, Int) -> Maybe a) -> Eval a
 
 fetch : String -> Eval Int
@@ -35,8 +35,7 @@ runEval env e with (eval e) {
 }
 
 main : IO ()
-main = do print [| (*2) (Just 4) |]
-          print [| plus (Just 4) (Just 5) |] 
+main = do print [| (\x => x *2) (Just 4) |]
+          print [| plus (Just 4) (Just 5) |]
           print (runEval [("x",21), ("y", 20)] (Add (Val 1) (Add (Var "x") (Var "y"))))
           print (runEval [("x",21)] (Add (Val 1) (Add (Var "x") (Var "y"))))
-          

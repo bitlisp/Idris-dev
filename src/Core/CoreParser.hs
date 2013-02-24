@@ -28,14 +28,15 @@ idrisDef = haskellDef {
               reservedOpNames 
                  = [":", "..", "=", "\\", "|", "<-", "->", "=>", "**"],
               reservedNames 
-                 = ["let", "in", "data", "codata", "record", "Set", 
+                 = ["let", "in", "data", "codata", "record", "Type", 
                     "do", "dsl", "import", "impossible", 
                     "case", "of", "total", "partial", "mutual",
                     "infix", "infixl", "infixr", 
                     "where", "with", "syntax", "proof", "postulate",
                     "using", "namespace", "class", "instance",
                     "public", "private", "abstract", 
-                    "Int", "Integer", "Float", "Char", "String", "Ptr"]
+                    "Int", "Integer", "Float", "Char", "String", "Ptr",
+                    "Bits8", "Bits16", "Bits32", "Bits64"]
            } 
 
 iOpStart = oneOf ":!#$%&*+./<=>?@\\^|-~"
@@ -54,12 +55,10 @@ lexWS = do i <- getInput
 
     simpleSpace = skipMany1 (satisfy isSpace)
     oneLineComment = do try (do string ("--")
-                                skipMany simpleSpace
                                 satisfy (\x -> x /= '|' && x /= '^'))
                         skipMany (satisfy (/= '\n'))
                         return ()
     multiLineComment = do try (do string "{-"
-                                  skipMany simpleSpace
                                   satisfy (\x -> x /= '|' && x /= '^'))
                           inCommentMulti
 
@@ -135,7 +134,6 @@ mkName (n, ns) = NS (UN n) (reverse (parseNS ns))
 pDocComment :: Char -> CParser a String
 pDocComment c 
    = try (do string ("--")
-             skipMany simpleSpace
              char c
              skipMany simpleSpace
              i <- getInput
@@ -144,7 +142,6 @@ pDocComment c
              whiteSpace
              return doc)
  <|> try (do string ("{-")
-             skipMany simpleSpace
              char c
              skipMany simpleSpace
              i <- getInput
@@ -219,8 +216,8 @@ pExp = do lchar '\\'; x <- iName []; lchar ':'; ty <- pTerm
                    lchar '.';
                    sc <- pTerm
                    return (RBind x (PVar ty) sc))
-       <|> try (do reserved "Set"
-                   return RSet)
+       <|> try (do reserved "Type"
+                   return RType)
        <|> try (do x <- iName []
                    return (Var x))
 

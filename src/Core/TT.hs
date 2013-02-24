@@ -14,7 +14,7 @@ import Util.Pretty hiding (Str)
 
 {- The language has:
    * Full dependent types
-   * A hierarchy of universes, with cumulativity: Set : Set1, Set1 : Set2, ...
+   * A hierarchy of universes, with cumulativity: Type : Type1, Type1 : Type2, ...
    * Pattern matching letrec binding
    * (primitive types defined externally)
 
@@ -25,7 +25,7 @@ import Util.Pretty hiding (Str)
      programs with implicit syntax into fully explicit terms.
 -}
 
-data Option = SetInSet
+data Option = TTypeInTType
             | CheckConv
   deriving Eq
 
@@ -59,6 +59,8 @@ data Err = Msg String
          | UniverseError
          | ProgramLineComment
          | Inaccessible Name
+         | NonCollapsiblePostulate Name
+         | AlreadyDefined Name
          | At FC Err
   deriving Eq
 
@@ -77,7 +79,7 @@ instance Sized Err where
   size UniverseError = 1
   size ProgramLineComment = 1
   size (At fc err) = size fc + size err
-  size (Inaccessible _) = 1
+  size _ = 1
 
 score :: Err -> Int
 score (CantUnify _ _ _ m _ s) = s + score m
@@ -122,7 +124,7 @@ instance Show a => Show (TC a) where
     show (Error str) = "Error: " ++ show str
 
 -- at some point, this instance should also carry type checking options
--- (e.g. Set:Set)
+-- (e.g. Type:Type)
 
 instance Monad TC where
     return = OK 
@@ -256,7 +258,11 @@ addAlist [] ctxt = ctxt
 addAlist ((n, tm) : ds) ctxt = addDef n tm (addAlist ds ctxt)
 
 data Const = I Int | BI Integer | Fl Double | Ch Char | Str String 
-           | IType | BIType     | FlType    | ChType  | StrType    
+           | IType | BIType     | FlType    | ChType  | StrType
+
+           | B8 Word8 | B16 Word16 | B32 Word32 | B64 Word64
+           | B8Type   | B16Type | B32Type | B64Type
+
            | PtrType | VoidType | Forgot
   deriving (Eq, Ord)
 {-! 
@@ -280,11 +286,15 @@ instance Pretty Const where
   pretty PtrType = text "Ptr"
   pretty VoidType = text "Void"
   pretty Forgot = text "Forgot"
+  pretty B8Type = text "Bits8"
+  pretty B16Type = text "Bits16"
+  pretty B32Type = text "Bits32"
+  pretty B64Type = text "Bits64"
 
 data Raw = Var Name
          | RBind Name (Binder Raw) Raw
          | RApp Raw Raw
-         | RSet
+         | RType
          | RForce Raw
          | RConstant Const
   deriving (Show, Eq)
@@ -293,7 +303,7 @@ instance Sized Raw where
   size (Var name) = 1
   size (RBind name bind right) = 1 + size bind + size right
   size (RApp left right) = 1 + size left + size right
-  size RSet = 1
+  size RType = 1
   size (RForce raw) = 1 + size raw
   size (RConstant const) = size const
 
@@ -427,7 +437,7 @@ data TT n = P NameType n (TT n) -- embed type
           | Proj (TT n) Int -- argument projection; runtime only
           | Erased
           | Impossible -- special case for totality checking
-          | Set UExp
+          | TType UExp
   deriving (Ord, Functor)
 {-! 
 deriving instance Binary TT 
@@ -458,7 +468,7 @@ instance Sized a => Sized (TT a) where
   size (App l r) = 1 + size l + size r
   size (Constant c) = size c
   size Erased = 1
-  size (Set u) = 1 + size u
+  size (TType u) = 1 + size u
 
 instance Pretty a => Pretty (TT a) where
   pretty _ = text "test"
@@ -472,11 +482,11 @@ data Datatype n = Data { d_typename :: n,
   deriving (Show, Functor, Eq)
 
 instance Eq n => Eq (TT n) where
-    (==) (P xt x _)     (P yt y _)     = xt == yt && x == y
+    (==) (P xt x _)     (P yt y _)     = x == y
     (==) (V x)          (V y)          = x == y
     (==) (Bind _ xb xs) (Bind _ yb ys) = xb == yb && xs == ys
     (==) (App fx ax)    (App fy ay)    = fx == fy && ax == ay
-    (==) (Set _)        (Set _)        = True -- deal with constraints later
+    (==) (TType _)        (TType _)        = True -- deal with constraints later
     (==) (Constant x)   (Constant y)   = x == y
     (==) (Proj x i)     (Proj y j)     = x == y && i == j
     (==) Erased         _              = True
@@ -489,7 +499,7 @@ isInjective :: TT n -> Bool
 isInjective (P (DCon _ _) _ _) = True
 isInjective (P (TCon _ _) _ _) = True
 isInjective (Constant _)       = True
-isInjective (Set x)            = True
+isInjective (TType x)            = True
 isInjective (Bind _ (Pi _) sc) = True
 isInjective (App f a)          = isInjective f
 isInjective _                  = False
@@ -511,12 +521,23 @@ instantiate e = subst 0 where
     subst i (Proj x idx) = Proj (subst i x) idx 
     subst i t = t
 
+explicitNames :: TT n -> TT n
+explicitNames (Bind x b sc) = let b' = fmap explicitNames b in
+                                  Bind x b'
+                                     (explicitNames (instantiate 
+                                        (P Bound x (binderTy b')) sc))
+explicitNames (App f a) = App (explicitNames f) (explicitNames a)
+explicitNames (Proj x idx) = Proj (explicitNames x) idx
+explicitNames t = t
+
 pToV :: Eq n => n -> TT n -> TT n
 pToV n = pToV' n 0
 pToV' n i (P _ x _) | n == x = V i
 pToV' n i (Bind x b sc)
-                | n == x    = Bind x (fmap (pToV' n i) b) sc
-                | otherwise = Bind x (fmap (pToV' n i) b) (pToV' n (i+1) sc)
+-- We can assume the inner scope has been pToVed already, so continue to
+-- resolve names from the *outer* scope which may happen to have the same id.
+--                 | n == x    = Bind x (fmap (pToV' n i) b) sc
+     | otherwise = Bind x (fmap (pToV' n i) b) (pToV' n (i+1) sc)
 pToV' n i (App f a) = App (pToV' n i f) (pToV' n i a)
 pToV' n i (Proj t idx) = Proj (pToV' n i t) idx
 pToV' n i t = t
@@ -547,6 +568,13 @@ subst n v tm = instantiate v (pToV n tm)
 substNames :: Eq n => [(n, TT n)] -> TT n -> TT n
 substNames []             t = t
 substNames ((n, tm) : xs) t = subst n tm (substNames xs t)
+
+substTerm :: Eq n => TT n -> TT n -> TT n -> TT n
+substTerm old new = st where
+  st t | t == old = new
+  st (App f a) = App (st f) (st a)
+  st (Bind x b sc) = Bind x (fmap st b) (st sc)
+  st t = t
 
 -- Returns true if V 0 and bound name n do not occur in the term
 
@@ -601,7 +629,7 @@ forget tm = fe [] tm
     fe env (App f a) = RApp (fe env f) (fe env a)
     fe env (Constant c) 
                      = RConstant c
-    fe env (Set i)   = RSet
+    fe env (TType i)   = RType
     fe env Erased    = RConstant Forgot 
     
 bindAll :: [(n, Binder (TT n))] -> TT n -> TT n 
@@ -624,6 +652,14 @@ getRetTy sc = sc
 uniqueName :: Name -> [Name] -> Name
 uniqueName n hs | n `elem` hs = uniqueName (nextName n) hs
                 | otherwise   = n
+
+uniqueBinders :: [Name] -> TT Name -> TT Name
+uniqueBinders ns (Bind n b sc)
+    = let n' = uniqueName n ns in
+          Bind n' (fmap (uniqueBinders (n':ns)) b) (uniqueBinders ns sc)
+uniqueBinders ns (App f a) = App (uniqueBinders ns f) (uniqueBinders ns a)
+uniqueBinders ns t = t
+  
 
 nextName (NS x s)    = NS (nextName x) s
 nextName (MN i n)    = MN (i+1) n
@@ -655,12 +691,20 @@ instance Show Const where
     show (Fl f) = show f
     show (Ch c) = show c
     show (Str s) = show s
+    show (B8 x) = show x
+    show (B16 x) = show x
+    show (B32 x) = show x
+    show (B64 x) = show x
     show IType = "Int"
     show BIType = "Integer"
     show FlType = "Float"
     show ChType = "Char"
     show StrType = "String"
     show PtrType = "Ptr"
+    show B8Type = "Bits8"
+    show B16Type = "Bits16"
+    show B32Type = "Bits32"
+    show B64Type = "Bits64"
     show VoidType = "Void"
 
 showEnv env t = showEnv' env t False
@@ -698,7 +742,7 @@ prettyEnv env t = prettyEnv' env t False
       prettySe 1 env x debug <+> text ("!" ++ show i)
     prettySe p env (Constant c) debug = pretty c
     prettySe p env Erased debug = text "[_]"
-    prettySe p env (Set i) debug = text "Set" <+> (text . show $ i)
+    prettySe p env (TType i) debug = text "Type" <+> (text . show $ i)
 
     prettySb env n (Lam t) = prettyB env "λ" "=>" n t
     prettySb env n (Hole t) = prettyB env "?defer" "." n t
@@ -730,7 +774,7 @@ showEnv' env t dbg = se 10 env t where
     se p env (Constant c) = show c
     se p env Erased = "[__]"
     se p env Impossible = "[impossible]"
-    se p env (Set i) = "Set " ++ show i
+    se p env (TType i) = "Type " ++ show i
 
     sb env n (Lam t)  = showb env "\\ " " => " n t
     sb env n (Hole t) = showb env "? " ". " n t
@@ -750,13 +794,17 @@ showEnv' env t dbg = se 10 env t where
 
 -- Check whether a term has any holes in it - impure if so
 
-pureTerm :: TT n -> Bool
+pureTerm :: TT Name -> Bool
 pureTerm (App f a) = pureTerm f && pureTerm a
-pureTerm (Bind n b sc) = pureBinder b && pureTerm sc where
+pureTerm (Bind n b sc) = notClassName n && pureBinder b && pureTerm sc where
     pureBinder (Hole _) = False
     pureBinder (Guess _ _) = False
     pureBinder (Let t v) = pureTerm t && pureTerm v
     pureBinder t = pureTerm (binderTy t)
+
+    notClassName (MN _ "class") = False
+    notClassName _ = True
+
 pureTerm _ = True
 
 -- weaken a term by adding i to each de Bruijn index (i.e. lift it over i bindings)
@@ -786,8 +834,9 @@ weakenTmEnv i = map (\ (n, b) -> (n, fmap (weakenTm i) b))
 orderPats :: Term -> Term
 orderPats tm = op [] tm
   where
-    op ps (Bind n (PVar t) sc) = op ((n, t) : ps) sc
-    op ps sc = bindAll (map (\ (n, t) -> (n, PVar t)) (sortP ps)) sc 
+    op ps (Bind n (PVar t) sc) = op ((n, PVar t) : ps) sc
+    op ps (Bind n (Hole t) sc) = op ((n, Hole t) : ps) sc
+    op ps sc = bindAll (map (\ (n, t) -> (n, t)) (sortP ps)) sc 
 
     sortP ps = pick [] (reverse ps)
 
@@ -804,7 +853,8 @@ orderPats tm = op [] tm
 
     insert n t [] = [(n, t)]
     insert n t ((n',t') : ps)
-        | n `elem` (namesIn t' ++ concatMap namesIn (map snd ps))
+        | n `elem` (namesIn (binderTy t') ++ 
+                      concatMap namesIn (map (binderTy . snd) ps))
             = (n', t') : insert n t ps
         | otherwise = (n,t):(n',t'):ps
 

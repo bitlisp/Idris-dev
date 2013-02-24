@@ -26,57 +26,57 @@ import Util.Pretty
 
 
 getContext :: Idris Context
-getContext = do i <- get; return (tt_ctxt i)
+getContext = do i <- getIState; return (tt_ctxt i)
 
 getObjectFiles :: Idris [FilePath]
-getObjectFiles = do i <- get; return (idris_objs i)
+getObjectFiles = do i <- getIState; return (idris_objs i)
 
 addObjectFile :: FilePath -> Idris ()
-addObjectFile f = do i <- get; put (i { idris_objs = f : idris_objs i })
+addObjectFile f = do i <- getIState; putIState $ i { idris_objs = f : idris_objs i }
 
 getLibs :: Idris [String]
-getLibs = do i <- get; return (idris_libs i)
+getLibs = do i <- getIState; return (idris_libs i)
 
 addLib :: String -> Idris ()
-addLib f = do i <- get; put (i { idris_libs = f : idris_libs i })
+addLib f = do i <- getIState; putIState $ i { idris_libs = f : idris_libs i }
 
 addHdr :: String -> Idris ()
-addHdr f = do i <- get; put (i { idris_hdrs = f : idris_hdrs i })
+addHdr f = do i <- getIState; putIState $ i { idris_hdrs = f : idris_hdrs i }
 
 totcheck :: (FC, Name) -> Idris ()
-totcheck n = do i <- get; put (i { idris_totcheck = idris_totcheck i ++ [n] })
+totcheck n = do i <- getIState; putIState $ i { idris_totcheck = idris_totcheck i ++ [n] }
 
 setFlags :: Name -> [FnOpt] -> Idris ()
-setFlags n fs = do i <- get; put (i { idris_flags = addDef n fs (idris_flags i) }) 
+setFlags n fs = do i <- getIState; putIState $ i { idris_flags = addDef n fs (idris_flags i) }
 
 setAccessibility :: Name -> Accessibility -> Idris ()
 setAccessibility n a 
-         = do i <- get
+         = do i <- getIState
               let ctxt = setAccess n a (tt_ctxt i)
-              put (i { tt_ctxt = ctxt })
+              putIState $ i { tt_ctxt = ctxt }
 
 setTotality :: Name -> Totality -> Idris ()
 setTotality n a 
-         = do i <- get
+         = do i <- getIState
               let ctxt = setTotal n a (tt_ctxt i)
-              put (i { tt_ctxt = ctxt })
+              putIState $ i { tt_ctxt = ctxt }
 
 getTotality :: Name -> Idris Totality
 getTotality n  
-         = do i <- get
+         = do i <- getIState
               case lookupTotal n (tt_ctxt i) of
                 [t] -> return t
                 _ -> return (Total [])
 
 addToCG :: Name -> CGInfo -> Idris ()
 addToCG n cg 
-   = do i <- get
-        put (i { idris_callgraph = addDef n cg (idris_callgraph i) })
+   = do i <- getIState
+        putIState $ i { idris_callgraph = addDef n cg (idris_callgraph i) }
 
 addDocStr :: Name -> String -> Idris ()
 addDocStr n doc 
-   = do i <- get
-        put (i { idris_docstrings = addDef n doc (idris_docstrings i) })
+   = do i <- getIState
+        putIState $ i { idris_docstrings = addDef n doc (idris_docstrings i) }
 
 addToCalledG :: Name -> [Name] -> Idris ()
 addToCalledG n ns = return () -- TODO
@@ -87,13 +87,13 @@ addToCalledG n ns = return () -- TODO
 
 addInstance :: Bool -> Name -> Name -> Idris ()
 addInstance int n i 
-    = do ist <- get
+    = do ist <- getIState
          case lookupCtxt Nothing n (idris_classes ist) of
                 [CI a b c d ins] ->
                      do let cs = addDef n (CI a b c d (addI i ins)) (idris_classes ist)
-                        put (ist { idris_classes = cs })
+                        putIState $ ist { idris_classes = cs }
                 _ -> do let cs = addDef n (CI (MN 0 "none") [] [] [] [i]) (idris_classes ist)
-                        put (ist { idris_classes = cs })
+                        putIState $ ist { idris_classes = cs }
   where addI i ins | int = i : ins
                    | chaser n = ins ++ [i]
                    | otherwise = insI i ins
@@ -107,45 +107,45 @@ addInstance int n i
 
 addClass :: Name -> ClassInfo -> Idris ()
 addClass n i 
-   = do ist <- get
+   = do ist <- getIState
         let i' = case lookupCtxt Nothing n (idris_classes ist) of
                       [c] -> c { class_instances = class_instances i }
                       _ -> i
-        put (ist { idris_classes = addDef n i' (idris_classes ist) }) 
+        putIState $ ist { idris_classes = addDef n i' (idris_classes ist) }
 
 addIBC :: IBCWrite -> Idris ()
 addIBC ibc@(IBCDef n) 
-           = do i <- get
+           = do i <- getIState
                 when (notDef (ibc_write i)) $
-                  put (i { ibc_write = ibc : ibc_write i })
+                  putIState $ i { ibc_write = ibc : ibc_write i }
    where notDef [] = True
          notDef (IBCDef n': is) | n == n' = False
          notDef (_ : is) = notDef is
-addIBC ibc = do i <- get; put (i { ibc_write = ibc : ibc_write i }) 
+addIBC ibc = do i <- getIState; putIState $ i { ibc_write = ibc : ibc_write i }
 
 clearIBC :: Idris ()
-clearIBC = do i <- get; put (i { ibc_write = [] })
+clearIBC = do i <- getIState; putIState $ i { ibc_write = [] }
 
 getHdrs :: Idris [String]
-getHdrs = do i <- get; return (idris_hdrs i)
+getHdrs = do i <- getIState; return (idris_hdrs i)
 
 setErrLine :: Int -> Idris ()
-setErrLine x = do i <- get;
+setErrLine x = do i <- getIState;
                   case (errLine i) of
-                      Nothing -> put (i { errLine = Just x })
+                      Nothing -> putIState $ i { errLine = Just x }
                       Just _ -> return ()
 
 clearErr :: Idris ()
-clearErr = do i <- get
-              put (i { errLine = Nothing })
+clearErr = do i <- getIState
+              putIState $ i { errLine = Nothing }
 
 getSO :: Idris (Maybe String)
-getSO = do i <- get
+getSO = do i <- getIState
            return (compiled_so i)
 
 setSO :: Maybe String -> Idris ()
-setSO s = do i <- get
-             put (i { compiled_so = s })
+setSO s = do i <- getIState
+             putIState $ (i { compiled_so = s })
 
 getIState :: Idris IState
 getIState = get
@@ -154,9 +154,9 @@ putIState :: IState -> Idris ()
 putIState = put
 
 getName :: Idris Int
-getName = do i <- get;
+getName = do i <- getIState;
              let idx = idris_name i;
-             put (i { idris_name = idx + 1 })
+             putIState $ (i { idris_name = idx + 1 })
              return idx
 
 checkUndefined :: FC -> Name -> Idris ()
@@ -175,24 +175,24 @@ isUndefined fc n
              _ -> return True
 
 setContext :: Context -> Idris ()
-setContext ctxt = do i <- get; put (i { tt_ctxt = ctxt } )
+setContext ctxt = do i <- getIState; putIState $ (i { tt_ctxt = ctxt } )
 
 updateContext :: (Context -> Context) -> Idris ()
-updateContext f = do i <- get; put (i { tt_ctxt = f (tt_ctxt i) } )
+updateContext f = do i <- getIState; putIState $ (i { tt_ctxt = f (tt_ctxt i) } )
 
 addConstraints :: FC -> (Int, [UConstraint]) -> Idris ()
 addConstraints fc (v, cs)
-    = do i <- get
+    = do i <- getIState
          let ctxt = tt_ctxt i
          let ctxt' = ctxt { uconstraints = cs ++ uconstraints ctxt,
                             next_tvar = v }
          let ics = zip cs (repeat fc) ++ idris_constraints i
-         put (i { tt_ctxt = ctxt', idris_constraints = ics })
+         putIState $ i { tt_ctxt = ctxt', idris_constraints = ics }
 
 addDeferred :: [(Name, Type)] -> Idris ()
 addDeferred ns = do mapM_ (\(n, t) -> updateContext (addTyDecl n (tidyNames [] t))) ns
-                    i <- get
-                    put (i { idris_metavars = map fst ns ++ idris_metavars i })
+                    i <- getIState
+                    putIState $ i { idris_metavars = map fst ns ++ idris_metavars i }
   where tidyNames used (Bind (MN i x) b sc)
             = let n' = uniqueName (UN x) used in
                   Bind n' b $ tidyNames (n':used) sc
@@ -202,8 +202,8 @@ addDeferred ns = do mapM_ (\(n, t) -> updateContext (addTyDecl n (tidyNames [] t
         tidyNames used b = b
 
 solveDeferred :: Name -> Idris ()
-solveDeferred n = do i <- get
-                     put (i { idris_metavars = idris_metavars i \\ [n] })
+solveDeferred n = do i <- getIState
+                     putIState $ i { idris_metavars = idris_metavars i \\ [n] }
 
 iputStrLn :: String -> Idris ()
 iputStrLn = liftIO . putStrLn
@@ -212,164 +212,164 @@ iWarn :: FC -> String -> Idris ()
 iWarn fc err = liftIO $ putStrLn (show fc ++ ":" ++ err)
 
 setLogLevel :: Int -> Idris ()
-setLogLevel l = do i <- get
+setLogLevel l = do i <- getIState
                    let opts = idris_options i
                    let opt' = opts { opt_logLevel = l }
-                   put (i { idris_options = opt' } )
+                   putIState $ i { idris_options = opt' }
 
 setCmdLine :: [Opt] -> Idris ()
-setCmdLine opts = do i <- get
+setCmdLine opts = do i <- getIState
                      let iopts = idris_options i
-                     put (i { idris_options = iopts { opt_cmdline = opts } })
+                     putIState $ i { idris_options = iopts { opt_cmdline = opts } }
 
 getDumpDefun :: Idris (Maybe FilePath)
-getDumpDefun = do i <- get
+getDumpDefun = do i <- getIState
                   return $ findC (opt_cmdline (idris_options i))
     where findC [] = Nothing
           findC (DumpDefun x : _) = Just x
           findC (_ : xs) = findC xs
 
 getDumpCases :: Idris (Maybe FilePath)
-getDumpCases = do i <- get
+getDumpCases = do i <- getIState
                   return $ findC (opt_cmdline (idris_options i))
     where findC [] = Nothing
           findC (DumpCases x : _) = Just x
           findC (_ : xs) = findC xs
 
 logLevel :: Idris Int
-logLevel = do i <- get
+logLevel = do i <- getIState
               return (opt_logLevel (idris_options i))
 
 setErrContext :: Bool -> Idris ()
-setErrContext t = do i <- get
+setErrContext t = do i <- getIState
                      let opts = idris_options i
                      let opt' = opts { opt_errContext = t }
-                     put (i { idris_options = opt' })
+                     putIState $ i { idris_options = opt' }
 
 errContext :: Idris Bool
-errContext = do i <- get
+errContext = do i <- getIState
                 return (opt_errContext (idris_options i))
 
 useREPL :: Idris Bool
-useREPL = do i <- get
+useREPL = do i <- getIState
              return (opt_repl (idris_options i))
 
 setREPL :: Bool -> Idris ()
-setREPL t = do i <- get
+setREPL t = do i <- getIState
                let opts = idris_options i
                let opt' = opts { opt_repl = t }
-               put (i { idris_options = opt' })
+               putIState $ i { idris_options = opt' }
 
 setTarget :: Target -> Idris ()
-setTarget t = do i <- get
+setTarget t = do i <- getIState
                  let opts = idris_options i
                  let opt' = opts { opt_target = t }
-                 put (i { idris_options = opt' })
+                 putIState $ i { idris_options = opt' }
 
 target :: Idris Target
-target = do i <- get
+target = do i <- getIState
             return (opt_target (idris_options i))
 
 setOutputTy :: OutputType -> Idris ()
-setOutputTy t = do i <- get
+setOutputTy t = do i <- getIState
                    let opts = idris_options i
                    let opt' = opts { opt_outputTy = t }
-                   put (i { idris_options = opt' })
+                   putIState $ i { idris_options = opt' }
 
 outputTy :: Idris OutputType
-outputTy = do i <- get
+outputTy = do i <- getIState
               return $ opt_outputTy $ idris_options i
 
 verbose :: Idris Bool
-verbose = do i <- get
+verbose = do i <- getIState
              return (opt_verbose (idris_options i))
 
 setVerbose :: Bool -> Idris ()
-setVerbose t = do i <- get
+setVerbose t = do i <- getIState
                   let opts = idris_options i
                   let opt' = opts { opt_verbose = t }
-                  put (i { idris_options = opt' })
+                  putIState $ i { idris_options = opt' }
 
 typeInType :: Idris Bool
-typeInType = do i <- get
+typeInType = do i <- getIState
                 return (opt_typeintype (idris_options i))
 
 setTypeInType :: Bool -> Idris ()
-setTypeInType t = do i <- get
+setTypeInType t = do i <- getIState
                      let opts = idris_options i
                      let opt' = opts { opt_typeintype = t }
-                     put (i { idris_options = opt' })
+                     putIState $ i { idris_options = opt' }
 
 coverage :: Idris Bool
-coverage = do i <- get
+coverage = do i <- getIState
               return (opt_coverage (idris_options i))
 
 setCoverage :: Bool -> Idris ()
-setCoverage t = do i <- get
+setCoverage t = do i <- getIState
                    let opts = idris_options i
                    let opt' = opts { opt_coverage = t }
-                   put (i { idris_options = opt' })
+                   putIState $ i { idris_options = opt' }
 
 setIBCSubDir :: FilePath -> Idris ()
-setIBCSubDir fp = do i <- get
+setIBCSubDir fp = do i <- getIState
                      let opts = idris_options i
                      let opt' = opts { opt_ibcsubdir = fp }
-                     put (i { idris_options = opt' })
+                     putIState $ i { idris_options = opt' }
 
 valIBCSubDir :: IState -> Idris FilePath
 valIBCSubDir i = return (opt_ibcsubdir (idris_options i))
 
 addImportDir :: FilePath -> Idris ()
-addImportDir fp = do i <- get
+addImportDir fp = do i <- getIState
                      let opts = idris_options i
                      let opt' = opts { opt_importdirs = fp : opt_importdirs opts }
-                     put (i { idris_options = opt' })
+                     putIState $ i { idris_options = opt' }
 
 setImportDirs :: [FilePath] -> Idris ()
-setImportDirs fps = do i <- get
+setImportDirs fps = do i <- getIState
                        let opts = idris_options i
                        let opt' = opts { opt_importdirs = fps }
-                       put (i { idris_options = opt' })
+                       putIState $ i { idris_options = opt' }
 
 allImportDirs :: IState -> Idris [FilePath]
 allImportDirs i = do let optdirs = opt_importdirs (idris_options i)
                      return ("." : optdirs)
 
 impShow :: Idris Bool
-impShow = do i <- get
+impShow = do i <- getIState
              return (opt_showimp (idris_options i))
 
 setImpShow :: Bool -> Idris ()
-setImpShow t = do i <- get
+setImpShow t = do i <- getIState
                   let opts = idris_options i
                   let opt' = opts { opt_showimp = t }
-                  put (i { idris_options = opt' })
+                  putIState $ i { idris_options = opt' }
 
 logLvl :: Int -> String -> Idris ()
-logLvl l str = do i <- get
+logLvl l str = do i <- getIState
                   let lvl = opt_logLevel (idris_options i)
                   when (lvl >= l)
                       $ do liftIO (putStrLn str)
-                           put (i { idris_log = idris_log i ++ str ++ "\n" } )
+                           putIState $ i { idris_log = idris_log i ++ str ++ "\n" }
 
-cmdOptSet :: Opt -> Idris Bool
-cmdOptSet x = do i <- get
-                 return $ x `elem` opt_cmdline (idris_options i)
+cmdOptType :: Opt -> Idris Bool
+cmdOptType x = do i <- getIState
+                  return $ x `elem` opt_cmdline (idris_options i)
 
 iLOG :: String -> Idris ()
 iLOG = logLvl 1
 
 noErrors :: Idris Bool
-noErrors = do i <- get
+noErrors = do i <- getIState
               case errLine i of
                 Nothing -> return True
                 _       -> return False
 
 setTypeCase :: Bool -> Idris ()
-setTypeCase t = do i <- get
+setTypeCase t = do i <- getIState
                    let opts = idris_options i
                    let opt' = opts { opt_typecase = t }
-                   put (i { idris_options = opt' })
+                   putIState $ i { idris_options = opt' }
 
 
 -- For inferring types of things
@@ -379,18 +379,18 @@ bi = FC "builtin" 0
 inferTy   = MN 0 "__Infer"
 inferCon  = MN 0 "__infer"
 inferDecl = PDatadecl inferTy 
-                      PSet
-                      [("", inferCon, PPi impl (MN 0 "A") PSet (
+                      PType
+                      [("", inferCon, PPi impl (MN 0 "A") PType (
                                   PPi expl (MN 0 "a") (PRef bi (MN 0 "A"))
                                   (PRef bi inferTy)), bi)]
 
 infTerm t = PApp bi (PRef bi inferCon) [pimp (MN 0 "A") Placeholder, pexp t]
-infP = P (TCon 6 0) inferTy (Set (UVal 0))
+infP = P (TCon 6 0) inferTy (TType (UVal 0))
 
 getInferTerm, getInferType :: Term -> Term
 getInferTerm (Bind n b sc) = Bind n b $ getInferTerm sc
 getInferTerm (App (App _ _) tm) = tm
-getInferTerm tm = error ("getInferTerm " ++ show tm)
+getInferTerm tm = tm -- error ("getInferTerm " ++ show tm)
 
 getInferType (Bind n b sc) = Bind n b $ getInferType sc
 getInferType (App (App _ ty) _) = ty
@@ -403,17 +403,17 @@ primNames = [unitTy, unitCon,
 
 unitTy   = MN 0 "__Unit"
 unitCon  = MN 0 "__II"
-unitDecl = PDatadecl unitTy PSet
+unitDecl = PDatadecl unitTy PType
                      [("", unitCon, PRef bi unitTy, bi)]
 
 falseTy   = MN 0 "__False"
-falseDecl = PDatadecl falseTy PSet []
+falseDecl = PDatadecl falseTy PType []
 
 pairTy    = MN 0 "__Pair"
 pairCon   = MN 0 "__MkPair"
-pairDecl  = PDatadecl pairTy (piBind [(n "A", PSet), (n "B", PSet)] PSet)
-            [("", pairCon, PPi impl (n "A") PSet (
-                       PPi impl (n "B") PSet (
+pairDecl  = PDatadecl pairTy (piBind [(n "A", PType), (n "B", PType)] PType)
+            [("", pairCon, PPi impl (n "A") PType (
+                       PPi impl (n "B") PType (
                        PPi expl (n "a") (PRef bi (n "A")) (
                        PPi expl (n "b") (PRef bi (n "B"))  
                            (PApp bi (PRef bi pairTy) [pexp (PRef bi (n "A")),
@@ -422,10 +422,10 @@ pairDecl  = PDatadecl pairTy (piBind [(n "A", PSet), (n "B", PSet)] PSet)
 
 eqTy = UN "="
 eqCon = UN "refl"
-eqDecl = PDatadecl eqTy (piBind [(n "a", PSet), (n "b", PSet),
+eqDecl = PDatadecl eqTy (piBind [(n "a", PType), (n "b", PType),
                                  (n "x", PRef bi (n "a")), (n "y", PRef bi (n "b"))]
-                                 PSet)
-                [("", eqCon, PPi impl (n "a") PSet (
+                                 PType)
+                [("", eqCon, PPi impl (n "a") PType (
                          PPi impl (n "x") (PRef bi (n "a"))
                            (PApp bi (PRef bi eqTy) [pimp (n "a") Placeholder,
                                                     pimp (n "b") Placeholder,
@@ -446,8 +446,11 @@ piBindp p ((n, ty):ns) t = PPi p n ty (piBind ns t)
     
 -- Dealing with parameters
 
-expandParams :: (Name -> Name) -> [(Name, PTerm)] -> [Name] -> PTerm -> PTerm
-expandParams dec ps ns tm = en tm
+expandParams :: (Name -> Name) -> [(Name, PTerm)] -> 
+                [Name] -> -- all names
+                [Name] -> -- names with no declaration
+                PTerm -> PTerm
+expandParams dec ps ns infs tm = en tm
   where
     -- if we shadow a name (say in a lambda binding) that is used in a call to
     -- a lifted function, we need access to both names - once in the scope of the
@@ -486,11 +489,21 @@ expandParams dec ps ns tm = en tm
 
     en (PQuote (Var n)) 
         | n `nselem` ns = PQuote (Var (dec n))
+    en (PApp fc (PInferRef fc' n) as)
+        | n `nselem` ns = PApp fc (PInferRef fc' (dec n)) 
+                           (map (pexp . (PRef fc)) (map fst ps) ++ (map (fmap en) as))
     en (PApp fc (PRef fc' n) as)
+        | n `elem` infs = PApp fc (PInferRef fc' (dec n)) 
+                           (map (pexp . (PRef fc)) (map fst ps) ++ (map (fmap en) as))
         | n `nselem` ns = PApp fc (PRef fc' (dec n)) 
                            (map (pexp . (PRef fc)) (map fst ps) ++ (map (fmap en) as))
     en (PRef fc n)
+        | n `elem` infs = PApp fc (PInferRef fc (dec n)) 
+                           (map (pexp . (PRef fc)) (map fst ps))
         | n `nselem` ns = PApp fc (PRef fc (dec n)) 
+                           (map (pexp . (PRef fc)) (map fst ps))
+    en (PInferRef fc n)
+        | n `nselem` ns = PApp fc (PInferRef fc (dec n)) 
                            (map (pexp . (PRef fc)) (map fst ps))
     en (PApp fc f as) = PApp fc (en f) (map (fmap en) as)
     en (PCase fc c os) = PCase fc (en c) (map (pmap en) os)
@@ -502,67 +515,81 @@ expandParams dec ps ns tm = en tm
 
     nseq x y = nsroot x == nsroot y
 
-expandParamsD :: IState -> 
+expandParamsD :: Bool -> -- True = RHS only
+                 IState -> 
                  (Name -> Name) -> [(Name, PTerm)] -> [Name] -> PDecl -> PDecl
-expandParamsD ist dec ps ns (PTy doc syn fc o n ty) 
-    = if n `elem` ns
-         then PTy doc syn fc o (dec n) (piBind ps (expandParams dec ps ns ty))
-         else PTy doc syn fc o n (expandParams dec ps ns ty)
-expandParamsD ist dec ps ns (PClauses fc opts n cs)
+expandParamsD rhsonly ist dec ps ns (PTy doc syn fc o n ty) 
+    = if n `elem` ns && (not rhsonly)
+         then -- trace (show (n, expandParams dec ps ns ty)) $
+              PTy doc syn fc o (dec n) (piBind ps (expandParams dec ps ns [] ty))
+         else --trace (show (n, expandParams dec ps ns ty)) $ 
+              PTy doc syn fc o n (expandParams dec ps ns [] ty)
+expandParamsD rhsonly ist dec ps ns (PPostulate doc syn fc o n ty) 
+    = if n `elem` ns && (not rhsonly)
+         then -- trace (show (n, expandParams dec ps ns ty)) $
+              PPostulate doc syn fc o (dec n) (piBind ps 
+                            (expandParams dec ps ns [] ty))
+         else --trace (show (n, expandParams dec ps ns ty)) $ 
+              PPostulate doc syn fc o n (expandParams dec ps ns [] ty)
+expandParamsD rhsonly ist dec ps ns (PClauses fc opts n cs)
     = let n' = if n `elem` ns then dec n else n in
           PClauses fc opts n' (map expandParamsC cs)
   where
     expandParamsC (PClause fc n lhs ws rhs ds)
         = let -- ps' = updateps True (namesIn ist rhs) (zip ps [0..])
               ps'' = updateps False (namesIn [] ist lhs) (zip ps [0..])
+              lhs' = if rhsonly then lhs else (expandParams dec ps'' ns [] lhs)
               n' = if n `elem` ns then dec n else n in
-              PClause fc n' (expandParams dec ps'' ns lhs)
-                            (map (expandParams dec ps'' ns) ws)
-                            (expandParams dec ps'' ns rhs)
-                            (map (expandParamsD ist dec ps'' ns) ds)
+              PClause fc n' lhs'
+                            (map (expandParams dec ps'' ns []) ws)
+                            (expandParams dec ps'' ns [] rhs)
+                            (map (expandParamsD True ist dec ps'' ns) ds)
     expandParamsC (PWith fc n lhs ws wval ds)
         = let -- ps' = updateps True (namesIn ist wval) (zip ps [0..])
               ps'' = updateps False (namesIn [] ist lhs) (zip ps [0..])
+              lhs' = if rhsonly then lhs else (expandParams dec ps'' ns [] lhs)
               n' = if n `elem` ns then dec n else n in
-              PWith fc n' (expandParams dec ps'' ns lhs)
-                          (map (expandParams dec ps'' ns) ws)
-                          (expandParams dec ps'' ns wval)
-                          (map (expandParamsD ist dec ps'' ns) ds)
+              PWith fc n' lhs'
+                          (map (expandParams dec ps'' ns []) ws)
+                          (expandParams dec ps'' ns [] wval)
+                          (map (expandParamsD rhsonly ist dec ps'' ns) ds)
     updateps yn nm [] = []
     updateps yn nm (((a, t), i):as)
         | (a `elem` nm) == yn = (a, t) : updateps yn nm as
         | otherwise = (MN i (show n ++ "_u"), t) : updateps yn nm as
-expandParamsD ist dec ps ns (PData doc syn fc co pd) 
+expandParamsD rhs ist dec ps ns (PData doc syn fc co pd) 
     = PData doc syn fc co (expandPData pd)
   where
     -- just do the type decl, leave constructors alone (parameters will be
     -- added implicitly)
     expandPData (PDatadecl n ty cons) 
        = if n `elem` ns
-            then PDatadecl (dec n) (piBind ps (expandParams dec ps ns ty)) (map econ cons)
-            else PDatadecl n (expandParams dec ps ns ty) (map econ cons)
+            then PDatadecl (dec n) (piBind ps (expandParams dec ps ns [] ty)) 
+                           (map econ cons)
+            else PDatadecl n (expandParams dec ps ns [] ty) (map econ cons)
     econ (doc, n, t, fc) 
-       = (doc, dec n, piBindp expl ps (expandParams dec ps ns t), fc)
-expandParamsD ist dec ps ns (PParams f params pds)
-   = PParams f (ps ++ map (mapsnd (expandParams dec ps ns)) params) pds
+       = (doc, dec n, piBindp expl ps (expandParams dec ps ns [] t), fc)
+expandParamsD rhs ist dec ps ns (PParams f params pds)
+   = PParams f (ps ++ map (mapsnd (expandParams dec ps ns [])) params) 
+               (map (expandParamsD True ist dec ps ns) pds)
 --                (map (expandParamsD ist dec ps ns) pds) 
-expandParamsD ist dec ps ns (PMutual f pds)
-   = PMutual f (map (expandParamsD ist dec ps ns) pds)
-expandParamsD ist dec ps ns (PClass doc info f cs n params decls)
+expandParamsD rhs ist dec ps ns (PMutual f pds)
+   = PMutual f (map (expandParamsD rhs ist dec ps ns) pds)
+expandParamsD rhs ist dec ps ns (PClass doc info f cs n params decls)
    = PClass doc info f 
-           (map (expandParams dec ps ns) cs)
+           (map (expandParams dec ps ns []) cs)
            n
-           (map (mapsnd (expandParams dec ps ns)) params)
-           (map (expandParamsD ist dec ps ns) decls)
-expandParamsD ist dec ps ns (PInstance info f cs n params ty cn decls)
+           (map (mapsnd (expandParams dec ps ns [])) params)
+           (map (expandParamsD rhs ist dec ps ns) decls)
+expandParamsD rhs ist dec ps ns (PInstance info f cs n params ty cn decls)
    = PInstance info f 
-           (map (expandParams dec ps ns) cs)
+           (map (expandParams dec ps ns []) cs)
            n
-           (map (expandParams dec ps ns) params)
-           (expandParams dec ps ns ty)
+           (map (expandParams dec ps ns []) params)
+           (expandParams dec ps ns [] ty)
            cn
-           (map (expandParamsD ist dec ps ns) decls)
-expandParamsD ist dec ps ns d = d
+           (map (expandParamsD rhs ist dec ps ns) decls)
+expandParamsD rhs ist dec ps ns d = d
 
 mapsnd f (x, t) = (x, f t)
 
@@ -573,13 +600,13 @@ mapsnd f (x, t) = (x, f t)
 -- * finally, everything else (3)
 
 getPriority :: IState -> PTerm -> Int
-getPriority i tm = pri tm 
+getPriority i tm = 1 -- pri tm 
   where
     pri (PRef _ n) =
         case lookupP Nothing n (tt_ctxt i) of
             ((P (DCon _ _) _ _):_) -> 1
             ((P (TCon _ _) _ _):_) -> 1
-            ((P Ref _ _):_) -> 4
+            ((P Ref _ _):_) -> 1
             [] -> 0 -- must be locally bound, if it's not an error...
     pri (PPi _ _ x y) = max 5 (max (pri x) (pri y))
     pri (PTrue _) = 0
@@ -607,8 +634,8 @@ addStatics n tm ptm =
        let statics' = nub $ map fst statics ++ 
                               filter (\x -> not (elem x dnames)) stnames
        let stpos = staticList statics' tm
-       i <- get
-       put (i { idris_statics = addDef n stpos (idris_statics i) })
+       i <- getIState
+       putIState $ i { idris_statics = addDef n stpos (idris_statics i) }
        addIBC (IBCStatic n)
   where
     initStatics (Bind n (Pi ty) sc) (PPi p _ _ s)
@@ -632,14 +659,14 @@ implicit syn n ptm = implicit' syn [] n ptm
 
 implicit' :: SyntaxInfo -> [Name] -> Name -> PTerm -> Idris PTerm
 implicit' syn ignore n ptm 
-    = do i <- get
+    = do i <- getIState
          let (tm', impdata) = implicitise syn ignore i ptm
 --          let (tm'', spos) = findStatics i tm'
-         put (i { idris_implicits = addDef n impdata (idris_implicits i) })
+         putIState $ i { idris_implicits = addDef n impdata (idris_implicits i) }
          addIBC (IBCImp n)
          logLvl 5 ("Implicit " ++ show n ++ " " ++ show impdata)
 --          i <- get
---          put (i { idris_statics = addDef n spos (idris_statics i) })
+--          putIState $ i { idris_statics = addDef n spos (idris_statics i) }
          return tm'
 
 implicitise :: SyntaxInfo -> [Name] -> IState -> PTerm -> (PTerm, [PArg])
@@ -730,24 +757,28 @@ implicitise syn ignore ist tm
 
 -- Add implicit arguments in function calls
 addImplPat :: IState -> PTerm -> PTerm
-addImplPat = addImpl' True []
+addImplPat = addImpl' True [] []
 
 addImplBound :: IState -> [Name] -> PTerm -> PTerm
-addImplBound ist ns = addImpl' False ns ist
+addImplBound ist ns = addImpl' False ns [] ist
+
+addImplBoundInf :: IState -> [Name] -> [Name] -> PTerm -> PTerm
+addImplBoundInf ist ns inf = addImpl' False ns inf ist
 
 addImpl :: IState -> PTerm -> PTerm
-addImpl = addImpl' False []
+addImpl = addImpl' False [] []
 
 -- TODO: in patterns, don't add implicits to function names guarded by constructors
 -- and *not* inside a PHidden
 
-addImpl' :: Bool -> [Name] -> IState -> PTerm -> PTerm
-addImpl' inpat env ist ptm = ai env ptm
+addImpl' :: Bool -> [Name] -> [Name] -> IState -> PTerm -> PTerm
+addImpl' inpat env infns ist ptm = ai (zip env (repeat Nothing)) ptm
   where
     ai env (PRef fc f)    
-        | not (f `elem` env) = handleErr $ aiFn inpat inpat ist fc f []
+        | f `elem` infns = PInferRef fc f
+        | not (f `elem` map fst env) = handleErr $ aiFn inpat inpat ist fc f []
     ai env (PHidden (PRef fc f))
-        | not (f `elem` env) = handleErr $ aiFn inpat False ist fc f []
+        | not (f `elem` map fst env) = handleErr $ aiFn inpat False ist fc f []
     ai env (PEq fc l r)   = let l' = ai env l
                                 r' = ai env r in
                                 PEq fc l' r'
@@ -763,10 +794,18 @@ addImpl' inpat env ist ptm = ai env ptm
                                    PDPair fc l' t' r'
     ai env (PAlternative a as) = let as' = map (ai env) as in
                                      PAlternative a as'
-    ai env (PApp fc (PRef _ f) as) 
-        | not (f `elem` env)
+    ai env (PApp fc (PInferRef _ f) as) 
+        = let as' = map (fmap (ai env)) as in
+              PApp fc (PInferRef fc f) as'  
+    ai env (PApp fc ftm@(PRef _ f) as) 
+        | f `elem` infns = ai env (PApp fc (PInferRef fc f) as)
+        | not (f `elem` map fst env)
                           = let as' = map (fmap (ai env)) as in
                                 handleErr $ aiFn inpat False ist fc f as'
+        | Just (Just ty) <- lookup f env
+                          = let as' = map (fmap (ai env)) as 
+                                arity = getPArity ty in
+                                mkPApp fc arity ftm as'
     ai env (PApp fc f as) = let f' = ai env f
                                 as' = map (fmap (ai env)) as in
                                 mkPApp fc 1 f' as'
@@ -774,15 +813,15 @@ addImpl' inpat env ist ptm = ai env ptm
                                  os' = map (pmap (ai env)) os in
                                  PCase fc c' os'
     ai env (PLam n ty sc) = let ty' = ai env ty
-                                sc' = ai (n:env) sc in
+                                sc' = ai ((n, Just ty):env) sc in
                                 PLam n ty' sc'
     ai env (PLet n ty val sc)
                           = let ty' = ai env ty
                                 val' = ai env val
-                                sc' = ai (n:env) sc in
+                                sc' = ai ((n, Just ty):env) sc in
                                 PLet n ty' val' sc'
     ai env (PPi p n ty sc) = let ty' = ai env ty
-                                 sc' = ai (n:env) sc in
+                                 sc' = ai ((n, Just ty):env) sc in
                                  PPi p n ty' sc'
     ai env (PHidden tm) = PHidden (ai env tm)
     ai env (PProof ts) = PProof (map (fmap (ai env)) ts)
@@ -954,7 +993,11 @@ matchClause' names i x y = checkRpts $ match (fullApp x) (fullApp y) where
 --                                  | otherwise = Nothing
     match (PRef f n) (PApp _ x []) = match (PRef f n) x
     match (PApp _ x []) (PRef f n) = match x (PRef f n)
-    match (PRef _ n) (PRef _ n') | n == n' = return []
+    match (PRef _ n) tm@(PRef _ n')
+        | n == n' && not names && 
+          (not (isConName Nothing n (tt_ctxt i)) || tm == Placeholder)
+            = return [(n, tm)]
+        | n == n' = return []
     match (PRef _ n) tm 
         | not names && (not (isConName Nothing n (tt_ctxt i)) || tm == Placeholder)
             = return [(n, tm)]
@@ -983,6 +1026,7 @@ matchClause' names i x y = checkRpts $ match (fullApp x) (fullApp y) where
                 _ -> LeftErr (a, b)
     match (PCase _ _ _) _ = return [] -- lifted out
     match (PMetavar _) _ = return [] -- modified
+    match (PInferRef _ _) _ = return [] -- modified
     match (PQuote _) _ = return []
     match (PProof _) _ = return []
     match (PTactics _) _ = return []
@@ -1018,23 +1062,35 @@ matchClause' names i x y = checkRpts $ match (fullApp x) (fullApp y) where
     checkRpts (LeftErr x) = Left x
 
 substMatches :: [(Name, PTerm)] -> PTerm -> PTerm
-substMatches [] t = t
-substMatches ((n,tm):ns) t = substMatch n tm (substMatches ns t)
+substMatches ms = substMatchesShadow ms []
+
+substMatchesShadow :: [(Name, PTerm)] -> [Name] -> PTerm -> PTerm
+substMatchesShadow [] shs t = t
+substMatchesShadow ((n,tm):ns) shs t 
+   = substMatchShadow n shs tm (substMatchesShadow ns shs t)
 
 substMatch :: Name -> PTerm -> PTerm -> PTerm
-substMatch n tm t = sm t where
-    sm (PRef _ n') | n == n' = tm
-    sm (PLam x t sc) = PLam x (sm t) (sm sc)
-    sm (PPi p x t sc) = PPi p x (sm t) (sm sc)
-    sm (PApp f x as) = PApp f (sm x) (map (fmap sm) as)
-    sm (PCase f x as) = PCase f (sm x) (map (pmap sm) as)
-    sm (PEq f x y) = PEq f (sm x) (sm y)
-    sm (PTyped x y) = PTyped (sm x) (sm y)
-    sm (PPair f x y) = PPair f (sm x) (sm y)
-    sm (PDPair f x t y) = PDPair f (sm x) (sm t) (sm y)
-    sm (PAlternative a as) = PAlternative a (map sm as)
-    sm (PHidden x) = PHidden (sm x)
-    sm x = x
+substMatch n = substMatchShadow n []
+
+substMatchShadow :: Name -> [Name] -> PTerm -> PTerm -> PTerm
+substMatchShadow n shs tm t = sm shs t where
+    sm xs (PRef _ n') | n == n' = tm
+    sm xs (PLam x t sc) = PLam x (sm xs t) (sm xs sc)
+    sm xs (PPi p x t sc) 
+         | x `elem` xs 
+             = let x' = nextName x in
+                   PPi p x' (sm (x':xs) (substMatch x (PRef (FC "" 0) x') t)) 
+                            (sm (x':xs) (substMatch x (PRef (FC "" 0) x') sc))
+         | otherwise = PPi p x (sm xs t) (sm (x : xs) sc)
+    sm xs (PApp f x as) = PApp f (sm xs x) (map (fmap (sm xs)) as)
+    sm xs (PCase f x as) = PCase f (sm xs x) (map (pmap (sm xs)) as)
+    sm xs (PEq f x y) = PEq f (sm xs x) (sm xs y)
+    sm xs (PTyped x y) = PTyped (sm xs x) (sm xs y)
+    sm xs (PPair f x y) = PPair f (sm xs x) (sm xs y)
+    sm xs (PDPair f x t y) = PDPair f (sm xs x) (sm xs t) (sm xs y)
+    sm xs (PAlternative a as) = PAlternative a (map (sm xs) as)
+    sm xs (PHidden x) = PHidden (sm xs x)
+    sm xs x = x
 
 shadow :: Name -> Name -> PTerm -> PTerm
 shadow n n' t = sm t where
@@ -1050,4 +1106,5 @@ shadow n n' t = sm t where
     sm (PAlternative a as) = PAlternative a (map sm as)
     sm (PHidden x) = PHidden (sm x)
     sm x = x
+
 

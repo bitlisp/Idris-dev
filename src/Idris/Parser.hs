@@ -25,6 +25,7 @@ import Text.Parsec.String
 import qualified Text.Parsec.Token as PTok
 
 import Data.List
+import Data.List.Split(splitOn)
 import Control.Monad.State
 import Debug.Trace
 import Data.Maybe
@@ -54,17 +55,21 @@ strlit     = PTok.stringLiteral lexer
 chlit      = PTok.charLiteral lexer
 lchar      = lexeme.char
 
+fixErrorMsg :: String -> [String] -> String
+fixErrorMsg msg fixes = msg ++ ", possible fixes:\n" ++ (concat $ intersperse "\n\nor\n\n" fixes)
+
 -- Loading modules
 
 loadModule :: FilePath -> Idris String
 loadModule f 
    = idrisCatch (do i <- getIState
+                    let file = takeWhile (/= ' ') f      
                     ibcsd <- valIBCSubDir i
                     ids <- allImportDirs i
-                    fp <- liftIO $ findImport ids ibcsd f
-                    if f `elem` imported i
-                       then iLOG $ "Already read " ++ f
-                       else do putIState (i { imported = f : imported i })
+                    fp <- liftIO $ findImport ids ibcsd file
+                    if file `elem` imported i
+                       then iLOG $ "Already read " ++ file
+                       else do putIState (i { imported = file : imported i })
                                case fp of
                                    IDR fn  -> loadSource False fn
                                    LIDR fn -> loadSource True  fn
@@ -74,7 +79,7 @@ loadModule f
                                                           case src of
                                                             IDR sfn -> loadSource False sfn
                                                             LIDR sfn -> loadSource True sfn)
-                    let (dir, fh) = splitFileName f
+                    let (dir, fh) = splitFileName file
                     return (dropExtension fh))
                 (\e -> do let msg = show e
                           setErrLine (getErrLine msg)
@@ -96,40 +101,42 @@ loadSource lidr f
                   mapM_ (addIBC . IBCImport) modules
                   ds' <- parseProg (defaultSyntax {syn_namespace = reverse mname }) 
                                    f rest pos
-                  let ds = namespaces mname ds'
-                  logLvl 3 (dumpDecls ds)
-                  i <- getIState
-                  logLvl 10 (show (toAlist (idris_implicits i)))
-                  logLvl 3 (show (idris_infixes i))
-                  -- Now add all the declarations to the context
-                  v <- verbose
-                  when v $ iputStrLn $ "Type checking " ++ f
-                  elabDecls toplevel ds
-                  i <- get
-                  -- simplify every definition do give the totality checker
-                  -- a better chance
-                  mapM_ (\n -> do logLvl 5 $ "Simplifying " ++ show n
-                                  updateContext (simplifyCasedef n))
-                           (map snd (idris_totcheck i))
-                  -- build size change graph from simplified definitions
-                  iLOG "Totality checking"
-                  i <- get
---                   mapM_ buildSCG (idris_totcheck i)
-                  mapM_ checkDeclTotality (idris_totcheck i)
-                  iLOG ("Finished " ++ f)
-                  ibcsd <- valIBCSubDir i
-                  let ibc = ibcPathNoFallback ibcsd f
-                  iLOG "Universe checking"
-                  iucheck
-                  i <- getIState
-                  addHides (hide_list i)
-                  ok <- noErrors
-                  when ok $
-                    idrisCatch (do writeIBC f ibc; clearIBC)
-                               (\c -> return ()) -- failure is harmless
-                  i <- getIState
-                  putIState (i { default_total = def_total,
-                                 hide_list = [] })
+                  unless (null ds') $ do
+                    let ds = namespaces mname ds'
+                    logLvl 3 (dumpDecls ds)
+                    i <- getIState
+                    logLvl 10 (show (toAlist (idris_implicits i)))
+                    logLvl 3 (show (idris_infixes i))
+                    -- Now add all the declarations to the context
+                    v <- verbose
+                    when v $ iputStrLn $ "Type checking " ++ f
+                    elabDecls toplevel ds
+                    i <- getIState
+                    -- simplify every definition do give the totality checker
+                    -- a better chance
+                    mapM_ (\n -> do logLvl 5 $ "Simplifying " ++ show n
+                                    updateContext (simplifyCasedef n))
+                             (map snd (idris_totcheck i))
+                    -- build size change graph from simplified definitions
+                    iLOG "Totality checking"
+                    i <- getIState
+                    mapM_ buildSCG (idris_totcheck i)
+                    mapM_ checkDeclTotality (idris_totcheck i)
+                    iLOG ("Finished " ++ f)
+                    ibcsd <- valIBCSubDir i
+                    let ibc = ibcPathNoFallback ibcsd f
+                    iLOG "Universe checking"
+                    iucheck
+                    i <- getIState
+                    addHides (hide_list i)
+                    ok <- noErrors
+                    when ok $
+                      idrisCatch (do writeIBC f ibc; clearIBC)
+                                 (\c -> return ()) -- failure is harmless
+                    i <- getIState
+                    putIState (i { default_total = def_total,
+                                   hide_list = [] })
+                    return ()
                   return ()
   where
     namespaces []     ds = ds
@@ -154,23 +161,17 @@ parseTac i = runParser (do t <- pTactic defaultSyntax
                            eof
                            return t) i "(proof)"
 
-iShowError fname err = let ln  = sourceLine (errorPos err)
-                           clm = sourceColumn (errorPos err)
-                           msg = map messageString (errorMessages err) in
-                           fname ++ ":" ++ show ln ++ ":parse error"
-                                 ++ " at column " ++ show clm -- ++ " with error:\n\t" ++ show msg
-
 parseImports :: FilePath -> String -> Idris ([String], [String], String, SourcePos)
 parseImports fname input 
-    = do i <- get
+    = do i <- getIState
          case runParser (do whiteSpace
                             mname <- pHeader
                             ps    <- many pImport
                             rest  <- getInput
                             pos   <- getPosition
                             return ((mname, ps, rest, pos), i)) i fname input of
-              Left err     -> fail (iShowError fname err)
-              Right (x, i) -> do put i
+              Left err     -> fail (show err)
+              Right (x, i) -> do putIState i
                                  return x
 
 pHeader :: IParser [String]
@@ -212,14 +213,13 @@ openBlock = do lchar '{'
 closeBlock :: IParser ()
 closeBlock = do ist <- getState
                 bs <- case brace_stack ist of
-                        Nothing : xs -> do lchar '}'
-                                           return xs
-                        Just lvl : xs -> do i   <- indent
-                                            inp <- getInput
+                        Nothing : xs -> (lchar '}' >> return xs) <|> (eof >> return [])
+                        Just lvl : xs -> (do i   <- indent
+                                             inp <- getInput
 --                                              trace (show (take 10 inp, i, lvl)) $
-                                            if i >= lvl && take 1 inp /= ")" 
-                                               then fail "Not end of block"
-                                               else return xs
+                                             if i >= lvl && take 1 inp /= ")" 
+                                                then fail "Not end of block"
+                                                else return xs) <|> (eof >> return [])
                 setState (ist { brace_stack = bs })
 
 pTerminator = do lchar ';'; popIndent
@@ -262,16 +262,13 @@ notEndBlock = do ist <- getState
 pfc :: IParser FC
 pfc = do s <- getPosition
          let (dir, file) = splitFileName (sourceName s)
-         let f = case dir of
-                      "./" -> file
-                      _    -> sourceName s
+         let f = if dir == addTrailingPathSeparator "." then file else sourceName s
          return $ FC f (sourceLine s)
 
 pImport :: IParser String
 pImport = do reserved "import"; f <- identifier; option ';' (lchar ';')
-             return (map dot f)
-  where dot '.' = '/'
-        dot c = c
+             return (toPath f)
+  where toPath n = foldl1 (</>) $ splitOn "." n
 
 -- a program is a list of declarations, possibly with associated
 -- documentation strings
@@ -279,15 +276,16 @@ pImport = do reserved "import"; f <- identifier; option ';' (lchar ';')
 parseProg :: SyntaxInfo -> FilePath -> String -> SourcePos -> 
              Idris [PDecl]
 parseProg syn fname input pos
-    = do i <- get
+    = do i <- getIState
          case runParser (do setPosition pos
                             whiteSpace
                             ps <- many (pDecl syn)
                             eof
                             i' <- getState
                             return (concat ps, i')) i fname input of
-            Left err     -> fail (iShowError fname err)
-            Right (x, i) -> do put i
+            Left err     -> do iputStrLn (show err)
+                               return []
+            Right (x, i) -> do putIState i
                                return (collect x)
 
 -- Collect PClauses with the same function name
@@ -357,10 +355,10 @@ pFunDecl syn
 pDecl' :: SyntaxInfo -> IParser PDecl
 pDecl' syn
        = try pFixity
-     <|> pFunDecl' syn
+     <|> try (pFunDecl' syn)
      <|> try (pData syn)
      <|> try (pRecord syn)
-     <|> pSyntaxDecl syn
+     <|> try (pSyntaxDecl syn)
 
 pSyntaxDecl :: SyntaxInfo -> IParser PDecl
 pSyntaxDecl syn
@@ -393,7 +391,7 @@ pSyntaxRule syn
          when (length ns /= length (nub ns)) 
             $ fail "Repeated variable in syntax rule"
          lchar '='
-         tm <- pExpr (impOK syn)
+         tm <- pTExpr (impOK syn)
          pTerminator
          return (Rule (mkSimple syms) tm sty)
   where
@@ -424,8 +422,6 @@ pSynSym = try (do lchar '['; n <- pName; lchar ']'
 
 pFunDecl' :: SyntaxInfo -> IParser PDecl
 pFunDecl' syn = try (do doc <- option "" (pDocComment '|')
-                        -- trace ("Doc: " ++ show doc) $ 
---                         let doc = ""
                         pushIndent
                         ist <- getState
                         let initOpts = if default_total ist
@@ -436,14 +432,35 @@ pFunDecl' syn = try (do doc <- option "" (pDocComment '|')
                         opts' <- pFnOpts opts
                         n_in <- pfName
                         let n = expandNS syn n_in
-                        ty <- pTSig (impOK syn)
                         fc <- pfc
+                        ty <- pTSig (impOK syn)
                         pTerminator 
 --                         ty' <- implicit syn n ty
                         addAcc n acc
                         return (PTy doc syn fc opts' n ty))
+            <|> try (pPostulate syn)
             <|> try (pPattern syn)
             <|> try (pCAF syn)
+
+pPostulate :: SyntaxInfo -> IParser PDecl
+pPostulate syn = do doc <- option "" (pDocComment '|')
+                    pushIndent
+                    reserved "postulate"
+                    ist <- getState
+                    let initOpts = if default_total ist
+                                      then [TotalFn]
+                                      else []
+                    opts <- pFnOpts initOpts
+                    acc <- pAccessibility
+                    opts' <- pFnOpts opts
+                    n_in <- pfName
+                    let n = expandNS syn n_in
+                    ty <- pTSig (impOK syn)
+                    fc <- pfc
+                    pTerminator 
+                    addAcc n acc
+                    return (PPostulate doc syn fc opts' n ty)
+
 
 pUsing :: SyntaxInfo -> IParser [PDecl]
 pUsing syn = 
@@ -490,12 +507,26 @@ pFixity = do pushIndent
              pTerminator 
              let prec = fromInteger i
              istate <- getState
-             let fs = map (Fix (f prec)) ops
-             setState (istate { 
-                idris_infixes = nub $ sort (fs ++ idris_infixes istate),
-                ibc_write = map IBCFix fs ++ ibc_write istate })
-             fc <- pfc
-             return (PFix fc (f prec) ops)
+             let infixes = idris_infixes istate
+             let fs      = map (Fix (f prec)) ops
+             let redecls = map (alreadyDeclared infixes) fs
+             let ill     = filter (not . checkValidity) redecls
+             if null ill
+                then do setState (istate { idris_infixes = nub $ sort (fs ++ infixes)
+                                         , ibc_write     = map IBCFix fs ++ ibc_write istate
+                                         })
+                        fc <- pfc
+                        return (PFix fc (f prec) ops)
+                else fail $ concatMap (\(f, (x:xs)) -> "Illegal redeclaration of fixity:\n\t\""
+                                                ++ show f ++ "\" overrides \"" ++ show x ++ "\"") ill
+             where alreadyDeclared :: [FixDecl] -> FixDecl -> (FixDecl, [FixDecl])
+                   alreadyDeclared fs f = (f, filter ((extractName f ==) . extractName) fs)
+
+                   checkValidity :: (FixDecl, [FixDecl]) -> Bool
+                   checkValidity (f, fs) = all (== f) fs
+
+                   extractName :: FixDecl -> String
+                   extractName (Fix _ n) = n
 
 fixity :: IParser (Int -> Fixity) 
 fixity = try (do reserved "infixl"; return Infixl)
@@ -521,7 +552,7 @@ pClass syn = do doc <- option "" (pDocComment '|')
     carg = do lchar '('; i <- pName; lchar ':'; ty <- pExpr syn; lchar ')'
               return (i, ty)
        <|> do i <- pName;
-              return (i, PSet)
+              return (i, PType)
 
 pInstance :: SyntaxInfo -> IParser [PDecl]
 pInstance syn = do reserved "instance"; fc <- pfc
@@ -569,7 +600,7 @@ pSimpleExtExpr syn = do i <- getState
 
 pNoExtExpr syn =
          try (pApp syn) 
-     <|> pRecordSet syn
+     <|> pRecordType syn
      <|> try (pSimpleExpr syn)
      <|> pLambda syn
      <|> pLet syn
@@ -708,6 +739,7 @@ pTacticsExpr syn = do
 pSimpleExpr syn = 
         try (do symbol "!["; t <- pTerm; lchar ']'; return $ PQuote t)
         <|> do lchar '?'; x <- pName; return (PMetavar x)
+        <|> do lchar '%'; fc <- pfc; reserved "instance"; return (PResolveTC fc)
         <|> do reserved "refl"; fc <- pfc; 
                tm <- option Placeholder (do lchar '{'; t <- pExpr syn; lchar '}';
                                             return t)
@@ -719,6 +751,9 @@ pSimpleExpr syn =
         <|> try (do x <- pfName
                     fc <- pfc
                     return (PRef fc x))
+        <|> try (do lchar '!'; x <- pfName
+                    fc <- pfc
+                    return (PInferRef fc x))
         <|> try (pList syn)
         <|> try (pAlt syn)
         <|> try (pIdiom syn)
@@ -727,7 +762,7 @@ pSimpleExpr syn =
         <|> try (do c <- pConstant
                     fc <- pfc
                     return (modifyConst syn fc (PConstant c)))
-        <|> do reserved "Set"; return PSet
+        <|> do reserved "Type"; return PType
         <|> try (do symbol "()"
                     fc <- pfc
                     return (PTrue fc))
@@ -753,13 +788,16 @@ bracketed syn =
                                                              pexp (PRef fc (MN 1000 "ARG"))]))
 
 pCaseOpt :: SyntaxInfo -> IParser (PTerm, PTerm)
-pCaseOpt syn = do lhs <- pExpr syn; symbol "=>"; rhs <- pExpr syn
+pCaseOpt syn = do lhs <- pExpr (syn { inPattern = True }) 
+                  symbol "=>"; rhs <- pExpr syn
                   return (lhs, rhs)
 
 modifyConst :: SyntaxInfo -> FC -> PTerm -> PTerm
 modifyConst syn fc (PConstant (I x)) 
     | not (inPattern syn)
-        = PApp fc (PRef fc (UN "fromInteger")) [pexp (PConstant (I x))]
+        = PAlternative False
+             [PApp fc (PRef fc (UN "fromInteger")) [pexp (PConstant (I x))],
+              PConstant (I x), PConstant (BI (toEnum x))]
     | otherwise = PAlternative False
                      [PConstant (I x), PConstant (BI (toEnum x))]
 modifyConst syn fc x = x
@@ -844,10 +882,10 @@ pConstraintArg syn = do symbol "@{"
                         symbol "}"
                         return (pconst e)
 
-pRecordSet syn 
+pRecordType syn 
     = do reserved "record"
          lchar '{'
-         fields <- sepBy1 pFieldSet (lchar ',')
+         fields <- sepBy1 pFieldType (lchar ',')
          lchar '}'
          fc <- pfc
          rec <- option Nothing (do e <- pSimpleExpr syn
@@ -857,25 +895,26 @@ pRecordSet syn
                 return (PLam (MN 0 "fldx") Placeholder
                             (applyAll fc fields (PRef fc (MN 0 "fldx"))))
             Just v -> return (applyAll fc fields v)
-   where pFieldSet = do n <- pfName
-                        lchar '='
-                        e <- pExpr syn
-                        return (n, e)
+   where pFieldType = do n <- pfName
+                         lchar '='
+                         e <- pExpr syn
+                         return (n, e)
          applyAll fc [] x = x
          applyAll fc ((n, e) : es) x
-            = applyAll fc es (PApp fc (PRef fc (mkSet n)) [pexp e, pexp x])
+            = applyAll fc es (PApp fc (PRef fc (mkType n)) [pexp e, pexp x])
                         
-mkSet (UN n) = UN ("set_" ++ n)
-mkSet (MN 0 n) = MN 0 ("set_" ++ n)
-mkSet (NS n s) = NS (mkSet n) s
+mkType (UN n) = UN ("set_" ++ n)
+mkType (MN 0 n) = MN 0 ("set_" ++ n)
+mkType (NS n s) = NS (mkType n) s
 
 noImp syn = syn { implicitAllowed = False }
 impOK syn = syn { implicitAllowed = True }
 
-pTSig syn = do lchar ':'
-               cs <- if implicitAllowed syn then pConstList syn else return []
-               sc <- pExpr syn 
-               return (bindList (PPi constraint) (map (\x -> (MN 0 "c", x)) cs) sc)
+pTSig syn = do lchar ':'; pTExpr syn
+
+pTExpr syn = do cs <- if implicitAllowed syn then pConstList syn else return []
+                sc <- pExpr syn 
+                return (bindList (PPi constraint) (map (\x -> (MN 0 "c", x)) cs) sc)
 
 pLambda syn = do lchar '\\'
                  try (do xt <- tyOptDeclList syn
@@ -1046,6 +1085,10 @@ pConstant = do reserved "Integer";return BIType
         <|> do reserved "Float";  return FlType
         <|> do reserved "String"; return StrType
         <|> do reserved "Ptr";    return PtrType
+        <|> do reserved "Bits8";  return B8Type
+        <|> do reserved "Bits16"; return B16Type
+        <|> do reserved "Bits32"; return B32Type
+        <|> do reserved "Bits64"; return B64Type
         <|> try (do f <- float;   return $ Fl f)
 --         <|> try (do i <- natural; lchar 'L'; return $ BI i)
         <|> try (do i <- natural; return $ I (fromInteger i))
@@ -1077,8 +1120,8 @@ toTable fs = map (map toBin)
          assoc (Infixr _) = AssocRight
          assoc (InfixN _) = AssocNone
 
-binary name f = Infix (do reservedOp name
-                          fc <- pfc; 
+binary name f = Infix (do fc <- pfc
+                          reservedOp name
                           doc <- option "" (pDocComment '^')
                           return (f fc)) 
 prefix name f = Prefix (do reservedOp name
@@ -1099,7 +1142,8 @@ accData a n ns = do addAcc n a
                     mapM_ (`addAcc` a) ns
 
 pRecord :: SyntaxInfo -> IParser PDecl
-pRecord syn = do acc <- pAccessibility
+pRecord syn = do doc <- option "" (pDocComment '|')
+                 acc <- pAccessibility
                  reserved "record"
                  fc <- pfc
                  tyn_in <- pfName
@@ -1116,10 +1160,10 @@ pRecord syn = do acc <- pAccessibility
                  let rsyn = syn { syn_namespace = show (nsroot tyn) : 
                                                      syn_namespace syn }
                  let fns = getRecNames rsyn cty
-                 mapM_ (\n -> addAcc n (toFreeze acc)) fns
-                 return $ PRecord "" rsyn fc tyn ty cdoc cn cty
+                 mapM_ (\n -> addAcc n acc) fns
+                 return $ PRecord doc rsyn fc tyn ty cdoc cn cty
   where
-    getRecNames syn (PPi _ n _ sc) = [expandNS syn n, expandNS syn (mkSet n)]
+    getRecNames syn (PPi _ n _ sc) = [expandNS syn n, expandNS syn (mkType n)]
                                        ++ getRecNames syn sc
     getRecNames _ _ = []
 
@@ -1156,10 +1200,21 @@ pData syn = try (do doc <- option "" (pDocComment '|')
                     fc <- pfc
                     tyn_in <- pfName
                     args <- many pName
-                    let ty = bindArgs (map (const PSet) args) PSet
+                    let ty = bindArgs (map (const PType) args) PType
                     let tyn = expandNS syn tyn_in
                     option (PData doc syn fc co (PLaterdecl tyn ty)) (do
-                      lchar '='
+                      try (lchar '=') <|> do reserved "where"
+                                             let kw = (if co then "co" else "") ++ "data "
+                                             let n  = show tyn_in ++ " "
+                                             let s  = kw ++ n 
+                                             let as = concat (intersperse " " $ map show args) ++ " "
+                                             let ns = concat (intersperse " -> " $ map ((\x -> "(" ++ x ++ " : Type)") . show) args)
+                                             let ss = concat (intersperse " -> " $ map (const "Type") args)
+                                             let fix1 = s ++ as ++ " = ..."
+                                             let fix2 = s ++ ": " ++ ns ++ " -> Type where\n  ..."
+                                             let fix3 = s ++ ": " ++ ss ++ " -> Type where\n  ..."
+                                             fail $ fixErrorMsg "unexpected \"where\"" [fix1, fix2, fix3]
+                                                         
                       cons <- sepBy1 (pSimpleCon syn) (lchar '|')
                       pTerminator
                       let conty = mkPApp fc (PRef fc tyn) (map (PRef fc) args)
@@ -1440,15 +1495,22 @@ pTactic syn = do reserved "intro"; ns <- sepBy pName (lchar ',')
           <|> do reserved "rewrite"; t <- pExpr syn;
                  i <- getState
                  return $ Rewrite (desugar syn i t)
-          <|> do reserved "let"; n <- pName; lchar '=';
-                 t <- pExpr syn;
-                 i <- getState
-                 return $ LetTac n (desugar syn i t)
+          <|> try (do reserved "let"; n <- pName; lchar ':'; 
+                      ty <- pExpr' syn; lchar '='; t <- pExpr syn;
+                      i <- getState
+                      return $ LetTacTy n (desugar syn i ty) (desugar syn i t))
+          <|> try (do reserved "let"; n <- pName; lchar '=';
+                      t <- pExpr syn;
+                      i <- getState
+                      return $ LetTac n (desugar syn i t))
           <|> do reserved "focus"; n <- pName
                  return $ Focus n
           <|> do reserved "exact"; t <- pExpr syn;
                  i <- getState
                  return $ Exact (desugar syn i t)
+          <|> do reserved "reflect"; t <- pExpr syn;
+                 i <- getState
+                 return $ ReflectTac (desugar syn i t)
           <|> do reserved "try"; t <- pTactic syn;
                  lchar '|';
                  t1 <- pTactic syn

@@ -16,6 +16,7 @@ import Idris.Primitives
 import Idris.Coverage
 import Idris.UnusedArgs
 import Idris.Docs
+import Idris.Completion
 
 import Paths_idris
 import Util.System
@@ -49,23 +50,23 @@ import Data.List
 import Data.Char
 import Data.Version
 
-repl :: IState -> [FilePath] -> Idris ()
+repl :: IState -> [FilePath] -> InputT Idris ()
 repl orig mods
    = H.catch
       (do let prompt = mkPrompt mods
-          x <- lift $ getInputLine (prompt ++ "> ")
+          x <- getInputLine (prompt ++ "> ")
           case x of
-              Nothing -> do iputStrLn "Bye bye"
+              Nothing -> do lift $ iputStrLn "Bye bye"
                             return ()
               Just input -> H.catch 
-                              (do ms <- processInput input orig mods
+                              (do ms <- lift $ processInput input orig mods
                                   case ms of
                                       Just mods -> repl orig mods
                                       Nothing -> return ())
                               ctrlC)
       ctrlC
-   where ctrlC :: SomeException -> Idris ()
-         ctrlC e = do iputStrLn (show e)
+   where ctrlC :: SomeException -> InputT Idris ()
+         ctrlC e = do lift $ iputStrLn (show e)
                       repl orig mods
 
 mkPrompt [] = "Idris"
@@ -78,7 +79,7 @@ lit f = case splitExtension f of
 
 processInput :: String -> IState -> [FilePath] -> Idris (Maybe [FilePath])
 processInput cmd orig inputs
-    = do i <- get
+    = do i <- getIState
          let fn = case inputs of
                         (f:_) -> f
                         _ -> ""
@@ -86,12 +87,12 @@ processInput cmd orig inputs
             Left err ->   do liftIO $ print err
                              return (Just inputs)
             Right Reload -> 
-                do put (orig { idris_options = idris_options i })
+                do putIState (orig { idris_options = idris_options i })
                    clearErr
                    mods <- mapM loadModule inputs  
                    return (Just inputs)
             Right (Load f) -> 
-                do put (orig { idris_options = idris_options i })
+                do putIState (orig { idris_options = idris_options i })
                    clearErr
                    mod <- loadModule f
                    return (Just [f])
@@ -111,7 +112,7 @@ processInput cmd orig inputs
 
 resolveProof :: Name -> Idris Name
 resolveProof n'
-  = do i <- get
+  = do i <- getIState
        ctxt <- getContext
        n <- case lookupNames Nothing n' ctxt of
                  [x] -> return x
@@ -121,15 +122,15 @@ resolveProof n'
 
 removeProof :: Name -> Idris ()
 removeProof n =
-  do i <- get
+  do i <- getIState
      let proofs = proof_list i
      let ps = filter ((/= n) . fst) proofs
-     put $ i { proof_list = ps }
+     putIState $ i { proof_list = ps }
 
 edit :: FilePath -> IState -> Idris ()
 edit "" orig = iputStrLn "Nothing to edit"
 edit f orig
-    = do i <- get
+    = do i <- getIState
          env <- liftIO $ getEnvironment
          let editor = getEditor env
          let line = case errLine i of
@@ -138,7 +139,7 @@ edit f orig
          let cmd = editor ++ line ++ f
          liftIO $ system cmd
          clearErr
-         put (orig { idris_options = idris_options i })
+         putIState (orig { idris_options = idris_options i })
          loadModule f
          iucheck
          return ()
@@ -149,7 +150,7 @@ edit f orig
 
 proofs :: IState -> Idris ()
 proofs orig
-  = do i <- get
+  = do i <- getIState
        let ps = proof_list i
        case ps of
             [] -> iputStrLn "No proofs available"
@@ -166,7 +167,7 @@ process fn Help = iputStrLn displayHelp
 process fn (Eval t) 
                  = do (tm, ty) <- elabVal toplevel False t
                       ctxt <- getContext
-                      ist <- get 
+                      ist <- getIState 
                       let tm' = normaliseAll ctxt [] tm
                       let ty' = normaliseAll ctxt [] ty
                       logLvl 3 $ "Raw: " ++ show (tm', ty')
@@ -186,7 +187,7 @@ process fn (ExecVal t)
     where fc = FC "(input)" 0 
 process fn (Check (PRef _ n))
                   = do ctxt <- getContext
-                       ist <- get
+                       ist <- getIState
                        imp <- impShow
                        case lookupTy Nothing n ctxt of
                         ts@(_:_) -> mapM_ (\t -> iputStrLn $ show n ++ " : " ++
@@ -194,20 +195,20 @@ process fn (Check (PRef _ n))
                         [] -> iputStrLn $ "No such variable " ++ show n
 process fn (Check t) = do (tm, ty) <- elabVal toplevel False t
                           ctxt <- getContext
-                          ist <- get 
+                          ist <- getIState 
                           imp <- impShow
                           let ty' = normaliseC ctxt [] ty
                           iputStrLn (showImp imp (delab ist tm) ++ " : " ++ 
                                     showImp imp (delab ist ty))
 
-process fn (DocStr n) = do i <- get
+process fn (DocStr n) = do i <- getIState
                            case lookupCtxtName Nothing n (idris_docstrings i) of
                                 [] -> iputStrLn $ "No documentation for " ++ show n
                                 ns -> mapM_ showDoc ns 
     where showDoc (n, d) 
              = do doc <- getDocs n
                   iputStrLn $ show doc
-process fn Universes = do i <- get
+process fn Universes = do i <- getIState
                           let cs = idris_constraints i
 --                        iputStrLn $ showSep "\n" (map show cs)
                           liftIO $ print (map fst cs)
@@ -216,7 +217,7 @@ process fn Universes = do i <- get
                           case ucheck cs of
                             Error e -> iputStrLn $ pshow i e
                             OK _ -> iputStrLn "Universes OK"
-process fn (Defn n) = do i <- get
+process fn (Defn n) = do i <- getIState
                          iputStrLn "Compiled patterns:\n"
                          liftIO $ print (lookupDef Nothing n (tt_ctxt i))
                          case lookupCtxt Nothing n (idris_patdefs i) of
@@ -230,40 +231,42 @@ process fn (Defn n) = do i <- get
              = do liftIO $ putStr $ showImp True (delab i lhs)
                   liftIO $ putStr " = "
                   liftIO $ putStrLn $ showImp True (delab i rhs)
-process fn (TotCheck n) = do i <- get
+process fn (TotCheck n) = do i <- getIState
                              case lookupTotal n (tt_ctxt i) of
                                 [t] -> iputStrLn (showTotal t i)
                                 _ -> return ()
 process fn (DebugInfo n) 
-   = do i <- get
+   = do i <- getIState
         let oi = lookupCtxtName Nothing n (idris_optimisation i)
         when (not (null oi)) $ iputStrLn (show oi)
         let si = lookupCtxt Nothing n (idris_statics i)
         when (not (null si)) $ iputStrLn (show si)
+        let di = lookupCtxt Nothing n (idris_datatypes i)
+        when (not (null di)) $ iputStrLn (show di)
         let d = lookupDef Nothing n (tt_ctxt i)
         when (not (null d)) $ liftIO $
            do print (head d)
         let cg = lookupCtxtName Nothing n (idris_callgraph i)
         findUnusedArgs (map fst cg)
-        i <- get
+        i <- getIState
         let cg' = lookupCtxtName Nothing n (idris_callgraph i)
         sc <- checkSizeChange n
         iputStrLn $ "Size change: " ++ show sc
         when (not (null cg')) $ do iputStrLn "Call graph:\n"
                                    iputStrLn (show cg')
-process fn (Info n) = do i <- get
+process fn (Info n) = do i <- getIState
                          case lookupCtxt Nothing n (idris_classes i) of
                               [c] -> classInfo c
                               _ -> iputStrLn "Not a class"
 process fn (Search t) = iputStrLn "Not implemented"
 process fn (Spec t) = do (tm, ty) <- elabVal toplevel False t
                          ctxt <- getContext
-                         ist <- get
+                         ist <- getIState
                          let tm' = simplify ctxt True [] {- (idris_statics ist) -} tm
                          iputStrLn (show (delab ist tm'))
 
 process fn (RmProof n')
-  = do i <- get
+  = do i <- getIState
        n <- resolveProof n'
        let proofs = proof_list i
        case lookup n proofs of
@@ -274,15 +277,15 @@ process fn (RmProof n')
                           where
                             insertMetavar :: Name -> Idris ()
                             insertMetavar n =
-                              do i <- get
+                              do i <- getIState
                                  let ms = idris_metavars i
-                                 put $ i { idris_metavars = n : ms }
+                                 putIState $ i { idris_metavars = n : ms }
 
 process fn (AddProof prf)
   = do let fb = fn ++ "~"
        liftIO $ copyFile fn fb -- make a backup in case something goes wrong!
        prog <- liftIO $ readFile fb
-       i <- get
+       i <- getIState
        let proofs = proof_list i
        n' <- case prf of
                 Nothing -> case proofs of
@@ -299,7 +302,7 @@ process fn (AddProof prf)
                           where ls = (lines prog)
 
 process fn (ShowProof n')
-  = do i <- get
+  = do i <- getIState
        n <- resolveProof n'
        let proofs = proof_list i
        case lookup n proofs of
@@ -308,26 +311,26 @@ process fn (ShowProof n')
 
 process fn (Prove n')
      = do ctxt <- getContext
-          ist <- get
+          ist <- getIState
           n <- case lookupNames Nothing n' ctxt of
                     [x] -> return x
                     [] -> return n'
                     ns -> fail $ pshow ist (CantResolveAlts (map show ns))
           prover (lit fn) n
           -- recheck totality
-          i <- get
+          i <- getIState
           totcheck (FC "(input)" 0, n)
           mapM_ (\ (f,n) -> setTotality n Unchecked) (idris_totcheck i)
           mapM_ checkDeclTotality (idris_totcheck i)
 
 process fn (HNF t)  = do (tm, ty) <- elabVal toplevel False t
                          ctxt <- getContext
-                         ist <- get
-                         let tm' = simplify ctxt True [] tm
+                         ist <- getIState
+                         let tm' = hnf ctxt [] tm
                          iputStrLn (show (delab ist tm'))
-process fn TTShell  = do ist <- get
+process fn TTShell  = do ist <- getIState
                          let shst = initState (tt_ctxt ist)
-                         shst' <- lift $ runShell shst
+                         runShell shst
                          return ()
 process fn Execute = do (m, _) <- elabVal toplevel False 
                                         (PApp fc 
@@ -359,7 +362,7 @@ process fn (Pattelab t)
      = do (tm, ty) <- elabVal toplevel True t
           iputStrLn $ show tm ++ "\n\n : " ++ show ty
 
-process fn (Missing n) = do i <- get
+process fn (Missing n) = do i <- getIState
                             case lookupDef Nothing n (tt_ctxt i) of
                                 [CaseOp _ _ _ _ _ args t _ _]
                                     -> do tms <- genMissing n args t
@@ -367,7 +370,7 @@ process fn (Missing n) = do i <- get
                                 [] -> iputStrLn $ show n ++ " undefined"
                                 _ -> iputStrLn $ "Ambiguous name"
 process fn Metavars 
-                 = do ist <- get
+                 = do ist <- getIState
                       let mvs = idris_metavars ist \\ primDefs
                       case mvs of
                         [] -> iputStrLn "No global metavariables to solve"
@@ -394,7 +397,7 @@ dumpMethod :: (Name, (FnOpts, PTerm)) -> Idris ()
 dumpMethod (n, (_, t)) = iputStrLn $ show n ++ " : " ++ show t
 
 dumpInstance :: Name -> Idris ()
-dumpInstance n = do i <- get
+dumpInstance n = do i <- getIState
                     ctxt <- getContext
                     imp <- impShow
                     case lookupTy Nothing n ctxt of
@@ -415,6 +418,15 @@ displayHelp = let vstr = showVersion version in
         col c1 c2 l m r = 
             l ++ take (c1 - length l) (repeat ' ') ++ 
             m ++ take (c2 - length m) (repeat ' ') ++ r ++ "\n"
+
+parseTarget :: String -> Target
+parseTarget "C" = ViaC
+parseTarget "Java" = ViaJava
+parseTarget "bytecode" = Bytecode
+parseTarget "javascript" = ViaJavaScript
+parseTarget "node" = ViaNode
+parseTarget "llvm" = ViaLLVM
+parseTarget _ = error "unknown target" -- FIXME: partial function
 
 parseArgs :: [String] -> [Opt]
 parseArgs [] = []
@@ -446,11 +458,11 @@ parseArgs ("--install":n:ns)    = PkgInstall n : (parseArgs ns)
 parseArgs ("--clean":n:ns)      = PkgClean n : (parseArgs ns)
 parseArgs ("--bytecode":n:ns)   = NoREPL : BCAsm n : (parseArgs ns)
 parseArgs ("--fovm":n:ns)       = NoREPL : FOVM n : (parseArgs ns)
-parseArgs ("--llvm":ns)         = UseTarget ViaLLVM : (parseArgs ns)
 parseArgs ("-S":ns)             = OutputTy Raw : (parseArgs ns)
 parseArgs ("-c":ns)             = OutputTy Object : (parseArgs ns)
 parseArgs ("--dumpdefuns":n:ns) = DumpDefun n : (parseArgs ns)
 parseArgs ("--dumpcases":n:ns)  = DumpCases n : (parseArgs ns)
+parseArgs ("--target":n:ns)     = UseTarget (parseTarget n) : (parseArgs ns)
 parseArgs (n:ns)                = Filename n : (parseArgs ns)
 
 help =
@@ -472,6 +484,7 @@ help =
     ([":showproof"], "<name>", "Show proof"),
     ([":proofs"], "", "Show available proofs"),
     ([":c",":compile"], "<filename>", "Compile to an executable <filename>"),
+    ([":js", ":javascript"], "<filename>", "Compile to JavaScript <filename>"),
     ([":exec",":execute"], "", "Compile to an executable and run"),
     ([":?",":h",":help"], "", "Display this help text"),
     ([":set"], "<option>", "Set an option (errorcontext, showimplicits)"),
@@ -479,12 +492,16 @@ help =
     ([":q",":quit"], "", "Exit the Idris system")
   ]
 
+
+replSettings :: Settings Idris
+replSettings = setComplete replCompletion defaultSettings
+
 -- invoke as if from command line
 idris :: [Opt] -> IO IState
-idris opts = runInputT defaultSettings $ execStateT (idrisMain opts) idrisInit
+idris opts = execStateT (idrisMain opts) idrisInit
 
 idrisMain :: [Opt] -> Idris ()
-idrisMain opts = 
+idrisMain opts =
     do let inputs = opt getFile opts
        let runrepl = not (NoREPL `elem` opts)
        let output = opt getOutput opts
@@ -500,8 +517,8 @@ idrisMain opts =
        let tgt = case opt getTarget opts of
                    [] -> ViaC
                    xs -> last xs
-       when (DefaultTotal `elem` opts) $ do i <- get
-                                            put (i { default_total = True })
+       when (DefaultTotal `elem` opts) $ do i <- getIState
+                                            putIState (i { default_total = True })
        setREPL runrepl
        setVerbose runrepl
        setCmdLine opts
@@ -511,12 +528,12 @@ idrisMain opts =
        mapM_ makeOption opts
        -- if we have the --fovm flag, drop into the first order VM testing
        case vm of
-	    [] -> return ()
-	    xs -> liftIO $ mapM_ (fovm tgt outty) xs 
+         [] -> return ()
+         xs -> liftIO $ mapM_ (fovm tgt outty) xs 
        -- if we have the --bytecode flag, drop into the bytecode assembler
        case bcs of
-	    [] -> return ()
-	    xs -> return () -- liftIO $ mapM_ bcAsm xs 
+         [] -> return ()
+         xs -> return () -- liftIO $ mapM_ bcAsm xs 
        case ibcsubdir of
          [] -> setIBCSubDir ""
          (d:_) -> setIBCSubDir d
@@ -526,8 +543,8 @@ idrisMain opts =
        elabPrims
        when (not (NoPrelude `elem` opts)) $ do x <- loadModule "Prelude"
                                                return ()
-       when runrepl $ iputStrLn banner 
-       ist <- get
+       when runrepl $ iputStrLn banner
+       ist <- getIState
        mods <- mapM loadModule inputs
        ok <- noErrors
        when ok $ case output of
@@ -536,7 +553,7 @@ idrisMain opts =
        when ok $ case newoutput of
                     [] -> return ()
                     (o:_) -> process "" (NewCompile o)  
-       when runrepl $ repl ist inputs
+       when runrepl $ runInputT replSettings $ repl ist inputs
        ok <- noErrors
        when (not ok) $ liftIO (exitWith (ExitFailure 1))
   where
@@ -549,7 +566,7 @@ idrisMain opts =
 
     addPkgDir :: String -> Idris ()
     addPkgDir p = do ddir <- liftIO $ getDataDir 
-                     addImportDir (ddir ++ "/" ++ p)
+                     addImportDir (ddir </> p)
 
 getFile :: Opt -> Maybe String
 getFile (Filename str) = Just str

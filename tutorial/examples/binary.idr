@@ -1,18 +1,16 @@
 module Main
 
-data Binary : Nat -> Set where
+data Binary : Nat -> Type where
     bEnd : Binary O
     bO : Binary n -> Binary (n + n)
     bI : Binary n -> Binary (S (n + n))
 
 instance Show (Binary n) where
-    show = show' where
-      show' : Binary n' -> String
-      show' (bO x) = show x ++ "0"
-      show' (bI x) = show x ++ "1"
-      show' bEnd = ""
+    show (bO x) = show x ++ "0"
+    show (bI x) = show x ++ "1"
+    show bEnd = ""
 
-data Parity : Nat -> Set where
+data Parity : Nat -> Type where
    even : Parity (n + n)
    odd  : Parity (S (n + n))
 

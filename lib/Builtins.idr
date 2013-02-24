@@ -1,23 +1,26 @@
 %access public
 %default total
 
-data Exists : (a : Set) -> (P : a -> Set) -> Set where
-    Ex_intro : {P : a -> Set} -> (x : a) -> P x -> Exists a P
+data Exists : (a : Type) -> (P : a -> Type) -> Type where
+    Ex_intro : {P : a -> Type} -> (x : a) -> P x -> Exists a P
 
-getWitness : {P : a -> Set} -> Exists a P -> a
+getWitness : {P : a -> Type} -> Exists a P -> a
 getWitness (a ** v) = a
 
-getProof : {P : a -> Set} -> (s : Exists a P) -> P (getWitness s)
+getProof : {P : a -> Type} -> (s : Exists a P) -> P (getWitness s)
 getProof (a ** v) = v
 
 FalseElim : _|_ -> a
 
 -- For rewrite tactic
-replace : {a:_} -> {x:_} -> {y:_} -> {P : a -> Set} -> x = y -> P x -> P y
+replace : {a:_} -> {x:_} -> {y:_} -> {P : a -> Type} -> x = y -> P x -> P y
 replace refl prf = prf
 
 sym : {l:a} -> {r:a} -> l = r -> r = l
 sym refl = refl
+
+trans : {a:x} -> {b:x} -> {c:x} -> a = b -> b = c -> a = c
+trans refl refl = refl
 
 lazy : a -> a
 lazy x = x -- compiled specially
@@ -31,13 +34,21 @@ malloc size x = x -- compiled specially
 trace_malloc : a -> a
 trace_malloc x = x -- compiled specially
 
+abstract
 believe_me : a -> b -- compiled specially as id, use with care!
 believe_me x = prim__believe_me _ _ x
+
+public -- reduces at compile time, use with extreme care!
+really_believe_me : a -> b 
+really_believe_me x = prim__believe_me _ _ x
 
 namespace Builtins {
 
 id : a -> a
 id x = x
+
+the : (a : Type) -> a -> a
+the _ = id
 
 const : a -> b -> a
 const x _ = x
@@ -70,7 +81,11 @@ boolElim : Bool -> |(t : a) -> |(f : a) -> a
 boolElim True  t e = t
 boolElim False t e = e
 
-data so : Bool -> Set where oh : so True
+data so : Bool -> Type where oh : so True
+
+data Equality : {A : Type} -> (x : A) -> (y : A) -> Type where
+    Unequal : {A : Type} -> {x : A} -> {y : A} -> (x = y -> _|_) -> Equality x y
+    Equal : {A : Type} -> {x : A} -> {y : A} -> (x = y) -> Equality x y
 
 syntax if [test] then [t] else [e] = boolElim test t e
 syntax [test] "?" [t] ":" [e] = if test then t else e
@@ -125,6 +140,12 @@ instance Eq Char where
 
 instance Eq String where
     (==) = boolOp prim__eqString
+
+instance Eq Bool where
+    True  == True  = True
+    True  == False = False
+    False == True  = False
+    False == False = True
 
 instance (Eq a, Eq b) => Eq (a, b) where
   (==) (a, c) (b, d) = (a == b) && (c == d)
@@ -241,6 +262,10 @@ instance Num Float where
 partial
 div : Int -> Int -> Int
 div = prim__divInt
+
+partial
+mod : Int -> Int -> Int
+mod = prim__modInt
 
 
 (/) : Float -> Float -> Float

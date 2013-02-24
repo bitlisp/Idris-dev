@@ -1,5 +1,7 @@
 module Idris.REPLParser(parseCmd) where
 
+import System.FilePath ((</>))
+
 import Idris.Parser
 import Idris.AbsSyntax
 import Core.TT
@@ -11,6 +13,7 @@ import qualified Text.ParserCombinators.Parsec.Token as PTok
 
 import Debug.Trace
 import Data.List
+import Data.List.Split(splitOn)
 
 parseCmd i = runParser pCmd i "(input)"
 
@@ -24,12 +27,13 @@ pCmd = try (do cmd ["q", "quit"]; eof; return Quit)
    <|> try (do cmd ["h", "?", "help"]; eof; return Help)
    <|> try (do cmd ["r", "reload"]; eof; return Reload)
    <|> try (do cmd ["m", "module"]; f <- identifier; eof;
-               return (ModImport (map dot f)))
+               return (ModImport (toPath f)))
    <|> try (do cmd ["e", "edit"]; eof; return Edit)
    <|> try (do cmd ["exec", "execute"]; eof; return Execute)
    <|> try (do cmd ["ttshell"]; eof; return TTShell)
    <|> try (do cmd ["c", "compile"]; f <- identifier; eof; return (Compile ViaC f))
    <|> try (do cmd ["jc", "newcompile"]; f <- identifier; eof; return (Compile ViaJava f))
+   <|> try (do cmd ["js", "javascript"]; f <- identifier; eof; return (Compile ViaJavaScript f))
    <|> try (do cmd ["nc", "newcompile"]; f <- identifier; eof; return (NewCompile f))
    <|> try (do cmd ["m", "metavars"]; eof; return Metavars)
    <|> try (do cmd ["proofs"]; eof; return Proofs)
@@ -59,8 +63,7 @@ pCmd = try (do cmd ["q", "quit"]; eof; return Quit)
    <|> do t <- pFullExpr defaultSyntax; return (Eval t)
    <|> do eof; return NOP
 
- where dot '.' = '/'
-       dot c = c
+ where toPath n = foldl1 (</>) $ splitOn "." n
 
 pOption :: IParser Opt
 pOption = do discard (symbol "errorcontext"); return ErrContext

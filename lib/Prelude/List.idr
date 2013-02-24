@@ -9,7 +9,7 @@ import Prelude.Nat
 %access public
 %default total
 
-infixr 7 :: 
+infixr 7 ::
 
 data List a
   = Nil
@@ -266,7 +266,7 @@ intersperse : a -> List a -> List a
 intersperse sep []      = []
 intersperse sep (x::xs) = x :: intersperse' sep xs
   where
-    intersperse' : a -> List a -> List a
+--     intersperse' : a -> List a -> List a
     intersperse' sep []      = []
     intersperse' sep (y::ys) = sep :: y :: intersperse' sep ys
 
@@ -324,9 +324,9 @@ find p (x::xs) =
     find p xs
 
 findIndex : (a -> Bool) -> List a -> Maybe Nat
-findIndex = findIndex' 0
+findIndex = findIndex' O
   where
-    findIndex' : Nat -> (a -> Bool) -> List a -> Maybe Nat
+--     findIndex' : Nat -> (a -> Bool) -> List a -> Maybe Nat
     findIndex' cnt p []      = Nothing
     findIndex' cnt p (x::xs) =
       if p x then
@@ -335,9 +335,9 @@ findIndex = findIndex' 0
         findIndex' (S cnt) p xs
 
 findIndices : (a -> Bool) -> List a -> List Nat
-findIndices = findIndices' 0
+findIndices = findIndices' O
   where
-    findIndices' : Nat -> (a -> Bool) -> List a -> List Nat
+--     findIndices' : Nat -> (a -> Bool) -> List a -> List Nat
     findIndices' cnt p []      = []
     findIndices' cnt p (x::xs) =
       if p x then
@@ -448,6 +448,8 @@ sorted (x::xs) =
     Nil     => True
     (y::ys) => x <= y && sorted (y::ys)
 
+%assert_total -- can't work this out, because in the case which is lifted out
+              -- y::ys and x::xs are bigger than the inputs...
 mergeBy : (a -> a -> Ordering) -> List a -> List a -> List a
 mergeBy order []      right   = right
 mergeBy order left    []      = left

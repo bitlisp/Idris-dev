@@ -1,21 +1,52 @@
-New in 0.9.6:
+New in 0.9.7:
+-------------
 
 User visible changes:
 
+* Primitives for 8,16,32 and 64 bit integers
+
+Internal changes:
+
+* Change unification so that it keeps track of failed constraints in case
+  later information helps to resolve them
+* Distinguishing parameters and indices in data types
+* Faster termination/coverage checking
+* Split 'javascript' target into 'javascript' and 'node'
+
+New in 0.9.6:
+-------------
+
+User visible changes:
+
+* The type of types is now 'Type' rather than 'Set'
 * Forward declarations of data allowed
   - supporting induction recursion and mutually recursive data
+* Type inference of definitions in 'where' clauses
+  - Provided that the type can be completely determined from the first
+    application of the function (in the top level definition)
 * 'mutual' blocks added
   - effect is to elaborate all types of declarations in the block before
     elaborating their definitions
+  - allows inductive-recursive definitions
+* Expression inspected by 'with' clause now abstracted from the goal
+  - i.e. "magic" with
 * Implicit arguments will be added automatically only if their initial
   letter is lower case, or they are in a using declaration
+* Added documentation comments (Haddock style) and ':doc' REPL command
 * Pattern matching on strings, big integers and characters
 * Added System.Concurrency modules
+* Added 'postulate' declarations
+* Allow type annotations on 'let' tactic
+* EXPERIMENTAL JavaScript generation, with '--target javascript' option
 
 Internal changes:
 
 * Separate inlining methods at compile-time and run-time
 * Fixed nested parameters blocks 
+* Improve efficiency of elaborator by:
+   - only normalising when necessary
+   - reducing backtracking with resolving ambiguities
+* Better compilation of case trees
 
 New in 0.9.5:
 -------------

@@ -28,13 +28,35 @@ data LExp = LV LVar
 -- Primitive operators. Backends are not *required* to implement all
 -- of these, but should report an error if they are unable
 
-data PrimFn = LPlus | LMinus | LTimes | LDiv | LEq | LLt | LLe | LGt | LGe
-            | LFPlus | LFMinus | LFTimes | LFDiv | LFEq | LFLt | LFLe | LFGt | LFGe
-            | LBPlus | LBMinus | LBTimes | LBDiv | LBEq | LBLt | LBLe | LBGt | LBGe
+data PrimFn = LPlus | LMinus | LTimes | LDiv | LMod 
+            | LAnd | LOr | LXOr | LCompl | LSHL| LSHR
+            | LEq | LLt | LLe | LGt | LGe
+            | LFPlus | LFMinus | LFTimes | LFDiv 
+            | LFEq | LFLt | LFLe | LFGt | LFGe
+            | LBPlus | LBMinus | LBDec | LBTimes | LBDiv | LBMod 
+            | LBEq | LBLt | LBLe | LBGt | LBGe
             | LStrConcat | LStrLt | LStrEq | LStrLen
             | LIntFloat | LFloatInt | LIntStr | LStrInt | LFloatStr | LStrFloat
-            | LIntBig | LBigInt | LStrBig | LBigStr
+            | LIntBig | LBigInt | LStrBig | LBigStr | LChInt | LIntCh
             | LPrintNum | LPrintStr | LReadStr
+
+            | LB8Lt | LB8Lte | LB8Eq | LB8Gt | LB8Gte
+            | LB8Plus | LB8Minus | LB8Times | LB8UDiv | LB8SDiv | LB8URem | LB8SRem
+            | LB8Shl | LB8LShr | LB8AShr | LB8And | LB8Or | LB8Xor | LB8Compl
+            | LB8Z16 | LB8Z32 | LB8Z64 | LB8S16 | LB8S32 | LB8S64 -- Zero/Sign extension
+            | LB16Lt | LB16Lte | LB16Eq | LB16Gt | LB16Gte
+            | LB16Plus | LB16Minus | LB16Times | LB16UDiv | LB16SDiv | LB16URem | LB16SRem
+            | LB16Shl | LB16LShr | LB16AShr | LB16And | LB16Or | LB16Xor | LB16Compl
+            | LB16Z32 | LB16Z64 | LB16S32 | LB16S64 | LB16T8 -- and Truncation
+            | LB32Lt | LB32Lte | LB32Eq | LB32Gt | LB32Gte
+            | LB32Plus | LB32Minus | LB32Times | LB32UDiv | LB32SDiv | LB32URem | LB32SRem
+            | LB32Shl | LB32LShr | LB32AShr | LB32And | LB32Or | LB32Xor | LB32Compl
+            | LB32Z64 | LB32S64 | LB32T8 | LB32T16
+            | LB64Lt | LB64Lte | LB64Eq | LB64Gt | LB64Gte
+            | LB64Plus | LB64Minus | LB64Times | LB64UDiv | LB64SDiv | LB64URem | LB64SRem
+            | LB64Shl | LB64LShr | LB64AShr | LB64And | LB64Or | LB64Xor | LB64Compl
+            | LB64T8 | LB64T16 | LB64T32
+            | LIntB8 | LIntB16 | LIntB32 | LIntB64 | LB32Int
 
             | LFExp | LFLog | LFSin | LFCos | LFTan | LFASin | LFACos | LFATan
             | LFSqrt | LFFloor | LFCeil
@@ -62,11 +84,14 @@ data LAlt = LConCase Int Name [Name] LExp
           | LDefaultCase LExp
   deriving (Show, Eq)
 
-data LDecl = LFun Name [Name] LExp -- name, arg names, definition, inlinable
+data LDecl = LFun [LOpt] Name [Name] LExp -- options, name, arg names, def
            | LConstructor Name Int Int -- constructor name, tag, arity
   deriving (Show, Eq)
 
 type LDefs = Ctxt LDecl
+
+data LOpt = Inline | NoInline
+  deriving (Show, Eq)
 
 addTags :: Int -> [(Name, LDecl)] -> (Int, [(Name, LDecl)])
 addTags i ds = tag i ds []
@@ -87,9 +112,9 @@ liftAll :: [(Name, LDecl)] -> [(Name, LDecl)]
 liftAll xs = concatMap (\ (x, d) -> lambdaLift x d) xs
 
 lambdaLift :: Name -> LDecl -> [(Name, LDecl)]
-lambdaLift n (LFun _ args e) 
+lambdaLift n (LFun _ _ args e) 
       = let (e', (LS _ _ decls)) = runState (lift args e) (LS n 0 []) in
-            (n, LFun n args e') : decls
+            (n, LFun [] n args e') : decls
 lambdaLift n x = [(n, x)]
 
 getNextName :: State LiftState Name
@@ -107,16 +132,18 @@ lift env (LApp tc (LV (Glob n)) args) = do args' <- mapM (lift env) args
                                            return (LApp tc (LV (Glob n)) args')
 lift env (LApp tc f args) = do f' <- lift env f
                                fn <- getNextName
-                               addFn fn (LFun fn env f')
+                               addFn fn (LFun [Inline] fn env f')
                                args' <- mapM (lift env) args
                                return (LApp tc (LV (Glob fn)) (map (LV . Glob) env ++ args'))
 lift env (LLazyApp n args) = do args' <- mapM (lift env) args
                                 return (LLazyApp n args')
 lift env (LLazyExp (LConst c)) = return (LConst c)
+-- lift env (LLazyExp (LApp tc (LV (Glob f)) args)) 
+--                       = lift env (LLazyApp f args)
 lift env (LLazyExp e) = do e' <- lift env e
                            let usedArgs = nub $ usedIn env e'
                            fn <- getNextName
-                           addFn fn (LFun fn usedArgs e')
+                           addFn fn (LFun [NoInline] fn usedArgs e')
                            return (LLazyApp fn (map (LV . Glob) usedArgs))
 lift env (LForce e) = do e' <- lift env e
                          return (LForce e') 
@@ -126,7 +153,7 @@ lift env (LLet n v e) = do v' <- lift env v
 lift env (LLam args e) = do e' <- lift (env ++ args) e
                             let usedArgs = nub $ usedIn env e'
                             fn <- getNextName
-                            addFn fn (LFun fn (usedArgs ++ args) e')
+                            addFn fn (LFun [Inline] fn (usedArgs ++ args) e')
                             return (LApp False (LV (Glob fn)) (map (LV . Glob) usedArgs))
 lift env (LProj t i) = do t' <- lift env t
                           return (LProj t' i)

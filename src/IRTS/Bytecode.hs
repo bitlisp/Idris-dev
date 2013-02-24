@@ -27,8 +27,10 @@ data Reg = RVal | L Int | T Int | Tmp
 
 data BC = ASSIGN Reg Reg
         | ASSIGNCONST Reg Const
+        | UPDATE Reg Reg
         | MKCON Reg Int [Reg]
-        | CASE Reg [(Int, [BC])] (Maybe [BC])
+        | CASE Bool -- definitely a constructor, no need to check, if true
+               Reg [(Int, [BC])] (Maybe [BC])
         | PROJECT Reg Int Int -- get all args from reg, put them from Int onwards
         | PROJECTINTO Reg Reg Int -- project argument from one reg into another 
         | CONSTCASE Reg [(Const, [BC])] (Maybe [BC])
@@ -72,6 +74,8 @@ bc reg (SForeign l t fname args) r
     = FOREIGNCALL reg l t fname (map farg args) : clean r
   where farg (ty, Loc i) = (ty, L i)
 bc reg (SLet (Loc i) e sc) r = bc (L i) e False ++ bc reg sc r
+bc reg (SUpdate (Loc i) sc) r = bc reg sc False ++ [ASSIGN (L i) reg]
+                                ++ clean r
 bc reg (SCon i _ vs) r = MKCON reg i (map getL vs) : clean r
     where getL (Loc x) = L x
 bc reg (SProj (Loc l) i) r = PROJECTINTO reg (L l) i : clean r 
@@ -82,7 +86,9 @@ bc reg (SError str) r = [ERROR str]
 bc reg SNothing r = NULL reg : clean r
 bc reg (SCase (Loc l) alts) r 
    | isConst alts = constCase reg (L l) alts r
-   | otherwise = conCase reg (L l) alts r
+   | otherwise = conCase True reg (L l) alts r
+bc reg (SChkCase (Loc l) alts) r 
+   = conCase False reg (L l) alts r
 
 isConst [] = False
 isConst (SConstCase _ _ : xs) = True
@@ -95,8 +101,8 @@ moveReg off (Loc x : xs) = assign (T off) (L x) ++ moveReg (off + 1) xs
 assign r1 r2 | r1 == r2 = []
              | otherwise = [ASSIGN r1 r2]
 
-conCase reg l xs r = [CASE l (mapMaybe (caseAlt l reg r) xs)
-                             (defaultAlt reg xs r)]
+conCase safe reg l xs r = [CASE safe l (mapMaybe (caseAlt l reg r) xs)
+                                (defaultAlt reg xs r)]
 
 constCase reg l xs r = [CONSTCASE l (mapMaybe (constAlt l reg r) xs)
                                (defaultAlt reg xs r)]

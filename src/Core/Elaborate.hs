@@ -15,6 +15,7 @@ import Core.ProofState
 import Core.TT
 import Core.Evaluate
 import Core.Typecheck
+import Core.Unify
 
 import Control.Monad.State
 import Data.Char
@@ -91,10 +92,23 @@ get_context :: Elab' aux Context
 get_context = do ES p _ _ <- get
                  return (context (fst p))
 
+-- update the context
+-- (should only be used for adding temporary definitions or all sorts of
+--  stuff could go wrong)
+set_context :: Context -> Elab' aux ()
+set_context ctxt = do ES (p, a) logs prev <- get
+                      put (ES (p { context = ctxt }, a) logs prev)
+
 -- get the proof term
 get_term :: Elab' aux Term
 get_term = do ES p _ _ <- get
               return (pterm (fst p))
+
+-- get the proof term
+update_term :: (Term -> Term) -> Elab' aux ()
+update_term f = do ES (p,a) logs prev <- get
+                   let p' = p { pterm = f (pterm p) }
+                   put (ES (p', a) logs prev)
 
 -- get the local context at the currently in focus hole
 get_env :: Elab' aux Env
@@ -104,6 +118,10 @@ get_env = do ES p _ _ <- get
 get_holes :: Elab' aux [Name]
 get_holes = do ES p _ _ <- get
                return (holes (fst p))
+
+get_probs :: Elab' aux Fails
+get_probs = do ES p _ _ <- get
+               return (problems (fst p))
 
 -- get the current goal type
 goal :: Elab' aux Type
@@ -126,18 +144,28 @@ get_type tm = do ctxt <- get_context
                  (val, ty) <- lift $ check ctxt env tm
                  return (finalise ty)
 
+get_type_val :: Raw -> Elab' aux (Term, Type)
+get_type_val tm = do ctxt <- get_context
+                     env <- get_env
+                     (val, ty) <- lift $ check ctxt env tm
+                     return (finalise val, finalise ty)
+
 -- get holes we've deferred for later definition
 get_deferred :: Elab' aux [Name]
 get_deferred = do ES p _ _ <- get
                   return (deferred (fst p))
 
-get_inj :: Elab' aux [(Term, Term, Term)]
-get_inj = do ES p _ _ <- get
-             return (injective (fst p))
-
 checkInjective :: (Term, Term, Term) -> Elab' aux ()
-checkInjective (tm, l, r) = if isInjective tm then return ()
+checkInjective (tm, l, r) = do ctxt <- get_context
+                               if isInj ctxt tm then return ()
                                 else lift $ tfail (NotInjective tm l r) 
+  where isInj ctxt (P _ n _) 
+            | isConName Nothing n ctxt = True
+        isInj ctxt (App f a) = isInj ctxt f
+        isInj ctxt (Constant _) = True
+        isInj ctxt (TType _) = True
+        isInj ctxt (Bind _ (Pi _) sc) = True
+        isInj ctxt _ = False
 
 -- get instance argument names
 get_instances :: Elab' aux [Name]
@@ -145,11 +173,20 @@ get_instances = do ES p _ _ <- get
                    return (instances (fst p))
 
 -- given a desired hole name, return a unique hole name
-unique_hole :: Name -> Elab' aux Name
-unique_hole n = do ES p _ _ <- get
-                   let bs = bound_in (pterm (fst p)) ++ bound_in (ptype (fst p))
-                   n' <- uniqueNameCtxt (context (fst p)) n (holes (fst p) ++ bs ++ dontunify (fst p))
-                   return n'
+unique_hole = unique_hole' False
+
+unique_hole' :: Bool -> Name -> Elab' aux Name
+unique_hole' reusable n 
+      = do ES p _ _ <- get
+           let bs = bound_in (pterm (fst p)) ++ 
+                    bound_in (ptype (fst p))
+           n' <- uniqueNameCtxt (context (fst p)) n (holes (fst p) 
+                   ++ bs ++ dontunify (fst p) ++ usedns (fst p))
+           ES (p, a) s u <- get
+           -- Hmm: Do we need this level of uniqueness?
+           let p' = p -- if reusable then p else p { usedns = n' : usedns p } 
+           put (ES (p', a) s u)
+           return n'
   where
     bound_in (Bind n b sc) = n : bi b ++ bound_in sc
       where
@@ -208,6 +245,9 @@ regret = processTactic' Regret
 compute :: Elab' aux ()
 compute = processTactic' Compute
 
+hnf_compute :: Elab' aux ()
+hnf_compute = processTactic' HNF_Compute
+
 eval_in :: Raw -> Elab' aux ()
 eval_in t = processTactic' (EvalIn t)
 
@@ -251,8 +291,14 @@ defer :: Name -> Elab' aux ()
 defer n = do n' <- unique_hole n
              processTactic' (Defer n')
 
+deferType :: Name -> Raw -> [Name] -> Elab' aux ()
+deferType n ty ns = processTactic' (DeferType n ty ns)
+
 instanceArg :: Name -> Elab' aux ()
 instanceArg n = processTactic' (Instance n)
+
+setinj :: Name -> Elab' aux ()
+setinj n = processTactic' (SetInjective n)
 
 proofstate :: Elab' aux ()
 proofstate = processTactic' ProofState
@@ -274,7 +320,8 @@ prepare_apply fn imps =
        ctxt <- get_context
        env <- get_env
        -- let claims = getArgs ty imps
-       claims <- mkClaims (normalise ctxt env ty) imps []
+       -- claims <- mkClaims (normalise ctxt env ty) imps []
+       claims <- mkClaims (finalise ty) imps [] (map fst env)
        ES (p, a) s prev <- get
        -- reverse the claims we made so that args go left to right
        let n = length (filter not imps)
@@ -285,15 +332,17 @@ prepare_apply fn imps =
 --             (h : _) -> reorder_claims h
        return claims
   where
-    mkClaims (Bind n' (Pi t) sc) (i : is) claims =
-        do n <- unique_hole (mkMN n')
+    mkClaims (Bind n' (Pi t_in) sc) (i : is) claims hs =
+        do let t = rebind hs t_in
+           n <- unique_hole (mkMN n')
 --            when (null claims) (start_unify n)
            let sc' = instantiate (P Bound n t) sc
+--            trace ("CLAIMING " ++ show (n, t) ++ " with " ++ show hs) $
            claim n (forget t)
            when i (movelast n)
-           mkClaims sc' is (n : claims)
-    mkClaims t [] claims = return (reverse claims)
-    mkClaims _ _ _ 
+           mkClaims sc' is (n : claims) hs
+    mkClaims t [] claims _ = return (reverse claims)
+    mkClaims _ _ _ _
             | Var n <- fn
                    = do ctxt <- get_context
                         case lookupTy Nothing n ctxt of
@@ -307,6 +356,13 @@ prepare_apply fn imps =
     mkMN n@(MN _ _) = n
     mkMN n@(UN x) = MN 1000 x
     mkMN (NS n xs) = NS (mkMN n) xs
+
+    rebind hs (Bind n t sc)
+        | n `elem` hs = let n' = uniqueName n hs in
+                            Bind n' (fmap (rebind hs) t) (rebind (n':hs) sc)
+        | otherwise = Bind n (fmap (rebind hs) t) (rebind (n:hs) sc)
+    rebind hs (App f a) = App (rebind hs f) (rebind hs a)
+    rebind hs t = t
 
 apply :: Raw -> [(Bool, Int)] -> Elab' aux [Name]
 apply fn imps = 
@@ -323,11 +379,16 @@ apply fn imps =
                           if null imps then [] -- do all we can 
                              else
                              map fst (filter (not.snd) (zip args (map fst imps)))
-       let (n, hs) = -- trace ("AVOID UNIFY: " ++ show (fn, dont) ++ "\n" ++ show ptm) $ 
+       let (n, hunis) = -- trace ("AVOID UNIFY: " ++ show (fn, dont) ++ "\n" ++ show ptm) $ 
                       unified p
-       let unify = dropGiven dont hs
+       let unify = -- trace ("Not done " ++ show hs) $ 
+                    dropGiven dont hunis hs
        put (ES (p { dontunify = dont, unified = (n, unify) }, a) s prev)
+       ptm <- get_term
+       g <- goal
+--        trace ("Goal " ++ show g ++ "\n" ++ show (fn,  imps, unify) ++ "\n" ++ show ptm) $ 
        end_unify
+       ptm <- get_term
        return (map (updateUnify unify) args)
   where updateUnify hs n = case lookup n hs of
                                 Just (P _ t _) -> t
@@ -355,7 +416,7 @@ apply_elab n args =
     do ty <- get_type (Var n)
        ctxt <- get_context
        env <- get_env
-       claims <- doClaims (normalise ctxt env ty) args []
+       claims <- doClaims (hnf ctxt env ty) args []
        prep_fill n (map fst claims)
        let eclaims = sortBy (\ (_, x) (_,y) -> priOrder x y) claims
        elabClaims [] False claims
@@ -394,7 +455,7 @@ apply_elab n args =
                          focus n; elaboration; elabClaims failed r xs
 
     mkMN n@(MN _ _) = n
-    mkMN n@(UN x) = MN 0 x
+    mkMN n@(UN x) = MN 1000 x
     mkMN (NS n ns) = NS (mkMN n) ns
 
 simple_app :: Elab' aux () -> Elab' aux () -> Elab' aux ()
@@ -403,18 +464,23 @@ simple_app fun arg =
        b <- unique_hole (MN 0 "b")
        f <- unique_hole (MN 0 "f")
        s <- unique_hole (MN 0 "s")
-       claim a RSet
-       claim b RSet
+       claim a RType
+       claim b RType
        claim f (RBind (MN 0 "aX") (Pi (Var a)) (Var b))
+       tm <- get_term
        start_unify s
        claim s (Var a)
        prep_fill f [s]
        -- try elaborating in both orders, since we might learn something useful
        -- either way
-       try (do focus s; arg
-               focus f; fun)
-           (do focus f; fun
-               focus s; arg)
+--        try (do focus s; arg
+--                focus f; fun)
+--            (do focus f; fun
+--                focus s; arg)
+       focus f; fun
+       focus s; arg
+       tm <- get_term
+       ps <- get_probs
        complete_fill
        hs <- get_holes
        -- We don't need a and b in the hole queue any more since they were just for
@@ -428,19 +494,24 @@ simple_app fun arg =
 -- which we'll fill with the argument type too.
 arg :: Name -> Name -> Elab' aux ()
 arg n tyhole = do ty <- unique_hole tyhole
-                  claim ty RSet
+                  claim ty RType
                   forall n (Var ty)
 
 -- Try a tactic, if it fails, try another
 try :: Elab' aux a -> Elab' aux a -> Elab' aux a
-try t1 t2 = do s <- get
-               case runStateT t1 s of
+try t1 t2 = try' t1 t2 False
+
+try' :: Elab' aux a -> Elab' aux a -> Bool -> Elab' aux a
+try' t1 t2 proofSearch
+          = do s <- get
+               ps <- get_probs
+               case prunStateT ps t1 s of
                     OK (v, s') -> do put s'
                                      return v
-                    Error e1 -> if recoverableErr e1 then
+                    Error e1 -> if proofSearch || recoverableErr e1 then
                                    do case runStateT t2 s of
                                          OK (v, s') -> do put s'; return v
-                                         Error e2 -> if score e1 > score e2 
+                                         Error e2 -> if score e1 >= score e2 
                                                         then lift (tfail e1) 
                                                         else lift (tfail e2)
                                    else lift (tfail e1)
@@ -466,18 +537,30 @@ tryAll xs = tryAll' [] (cantResolve, 0) (map fst xs)
     tryAll' [res] _   [] = res
     tryAll' (_:_) _   [] = cantResolve
     tryAll' [] (f, _) [] = f
-    tryAll' cs f (x:xs) = do s <- get
-                             case runStateT x s of
-                                    OK (v, s') -> tryAll' ((do put s'
-                                                               return v):cs)  f xs
-                                    Error err -> do put s
-                                                    if (score err) < 100
-                                                      then
-                                                        tryAll' cs (better err f) xs
-                                                      else
-                                                        tryAll' [] (better err f) xs -- give up
+    tryAll' cs f (x:xs) 
+       = do s <- get
+            ps <- get_probs
+            case prunStateT ps x s of
+                OK (v, s') -> tryAll' ((do put s'
+                                           return v):cs)  f xs
+                Error err -> do put s
+                                if (score err) < 100
+                                    then tryAll' cs (better err f) xs
+                                    else tryAll' [] (better err f) xs -- give up
+
 
     better err (f, i) = let s = score err in
                             if (s >= i) then (lift (tfail err), s)
                                         else (f, i)
 
+prunStateT ps x s 
+      = case runStateT x s of
+             OK (v, s'@(ES (p, _) _ _)) -> 
+                 if (length (problems p) > length ps)
+                    then case reverse (problems p) of
+                            ((_,_,_,e):_) -> Error e
+                    else OK (v, s')
+             Error e -> Error e
+
+dumpprobs [] = ""
+dumpprobs ((_,_,_,e):es) = show e ++ "\n" ++ dumpprobs es

@@ -21,7 +21,7 @@ import System.Directory
 import Paths_idris
 
 ibcVersion :: Word8
-ibcVersion = 23
+ibcVersion = 26
 
 data IBCFile = IBCFile { ver :: Word8,
                          sourcefile :: FilePath,
@@ -353,13 +353,22 @@ instance Binary Const where
                             put x1
                 Str x1 -> do putWord8 4
                              put x1
-                IType -> putWord8 5
-                BIType -> putWord8 6
-                FlType -> putWord8 7
-                ChType -> putWord8 8
-                StrType -> putWord8 9
-                PtrType -> putWord8 10
-                Forgot -> putWord8 11
+                B8 x1 -> putWord8 5 >> put x1
+                B16 x1 -> putWord8 6 >> put x1
+                B32 x1 -> putWord8 7 >> put x1
+                B64 x1 -> putWord8 8 >> put x1
+
+                IType -> putWord8 9
+                BIType -> putWord8 10
+                FlType -> putWord8 11
+                ChType -> putWord8 12
+                StrType -> putWord8 13
+                PtrType -> putWord8 14
+                Forgot -> putWord8 15
+                B8Type  -> putWord8 16
+                B16Type -> putWord8 17
+                B32Type -> putWord8 18
+                B64Type -> putWord8 19
         get
           = do i <- getWord8
                case i of
@@ -373,13 +382,24 @@ instance Binary Const where
                            return (Ch x1)
                    4 -> do x1 <- get
                            return (Str x1)
-                   5 -> return IType
-                   6 -> return BIType
-                   7 -> return FlType
-                   8 -> return ChType
-                   9 -> return StrType
-                   10 -> return PtrType
-                   11 -> return Forgot
+                   5 -> fmap B8 get
+                   6 -> fmap B16 get
+                   7 -> fmap B32 get
+                   8 -> fmap B64 get
+
+                   9 -> return IType
+                   10 -> return BIType
+                   11 -> return FlType
+                   12 -> return ChType
+                   13 -> return StrType
+                   14 -> return PtrType
+                   15 -> return Forgot
+
+                   16 -> return B8Type
+                   17 -> return B16Type
+                   18 -> return B32Type
+                   19 -> return B64Type
+
                    _ -> error "Corrupted binary data for Const"
 
  
@@ -395,7 +415,7 @@ instance Binary Raw where
                 RApp x1 x2 -> do putWord8 2
                                  put x1
                                  put x2
-                RSet -> putWord8 3
+                RType -> putWord8 3
                 RConstant x1 -> do putWord8 4
                                    put x1
                 RForce x1 -> do putWord8 5
@@ -412,7 +432,7 @@ instance Binary Raw where
                    2 -> do x1 <- get
                            x2 <- get
                            return (RApp x1 x2)
-                   3 -> return RSet
+                   3 -> return RType
                    4 -> do x1 <- get
                            return (RConstant x1)
                    5 -> do x1 <- get
@@ -518,8 +538,8 @@ instance (Binary n) => Binary (TT n) where
                                  put x1
                                  put x2
                 Erased -> putWord8 6
-                Set x1 -> do putWord8 7
-                             put x1
+                TType x1 -> do putWord8 7
+                               put x1
                 Impossible -> putWord8 8
         get
           = do i <- getWord8
@@ -544,7 +564,7 @@ instance (Binary n) => Binary (TT n) where
                            return (Proj x1 x2)
                    6 -> return Erased
                    7 -> do x1 <- get
-                           return (Set x1)
+                           return (TType x1)
                    8 -> return Impossible
                    _ -> error "Corrupted binary data for TT"
 
@@ -682,6 +702,7 @@ instance Binary PReason where
                 Mutual x1 -> do putWord8 4
                                 put x1
                 NotProductive -> putWord8 5
+                BelieveMe -> putWord8 6
         get
           = do i <- getWord8
                case i of
@@ -693,6 +714,7 @@ instance Binary PReason where
                    4 -> do x1 <- get
                            return (Mutual x1)
                    5 -> return NotProductive
+                   6 -> return BelieveMe
                    _ -> error "Corrupted binary data for PReason"
 
 instance Binary Totality where
@@ -957,6 +979,14 @@ instance (Binary t) => Binary (PDecl' t) where
                 PMutual x1 x2  -> do putWord8 11
                                      put x1
                                      put x2
+                PPostulate x1 x2 x3 x4 x5 x6
+                                   -> do putWord8 12
+                                         put x1
+                                         put x2
+                                         put x3
+                                         put x4
+                                         put x5
+                                         put x6
         get
           = do i <- getWord8
                case i of
@@ -1025,6 +1055,13 @@ instance (Binary t) => Binary (PDecl' t) where
                    11 -> do x1 <- get
                             x2 <- get
                             return (PMutual x1 x2)
+                   12 -> do x1 <- get
+                            x2 <- get
+                            x3 <- get
+                            x4 <- get
+                            x5 <- get
+                            x6 <- get
+                            return (PPostulate x1 x2 x3 x4 x5 x6)
                    _ -> error "Corrupted binary data for PDecl'"
 
 instance Binary SyntaxInfo where
@@ -1186,7 +1223,7 @@ instance Binary PTerm where
                                          put x2
                 PHidden x1 -> do putWord8 16
                                  put x1
-                PSet -> putWord8 17
+                PType -> putWord8 17
                 PConstant x1 -> do putWord8 18
                                    put x1
                 Placeholder -> putWord8 19
@@ -1207,6 +1244,9 @@ instance Binary PTerm where
                 PPatvar x1 x2 -> do putWord8 28
                                     put x1
                                     put x2
+                PInferRef x1 x2 -> do putWord8 29
+                                      put x1
+                                      put x2
         get
           = do i <- getWord8
                case i of
@@ -1267,7 +1307,7 @@ instance Binary PTerm where
                             return (PAlternative x1 x2)
                    16 -> do x1 <- get
                             return (PHidden x1)
-                   17 -> return PSet
+                   17 -> return PType
                    18 -> do x1 <- get
                             return (PConstant x1)
                    19 -> return Placeholder
@@ -1288,6 +1328,9 @@ instance Binary PTerm where
                    28 -> do x1 <- get
                             x2 <- get
                             return (PPatvar x1 x2)
+                   29 -> do x1 <- get
+                            x2 <- get
+                            return (PInferRef x1 x2)
                    _ -> error "Corrupted binary data for PTerm"
  
 instance (Binary t) => Binary (PTactic' t) where
@@ -1321,6 +1364,8 @@ instance (Binary t) => Binary (PTactic' t) where
                                  put x1
                                  put x2
                 Qed -> putWord8 15
+                ReflectTac x1 -> do putWord8 16
+                                    put x1
         get
           = do i <- getWord8
                case i of
@@ -1352,6 +1397,8 @@ instance (Binary t) => Binary (PTactic' t) where
                             x2 <- get
                             return (TSeq x1 x2)
                    15 -> return Qed
+                   16 -> do x1 <- get
+                            return (ReflectTac x1)
                    _ -> error "Corrupted binary data for PTactic'"
 
 
@@ -1488,11 +1535,13 @@ instance Binary OptInfo where
                return (Optimise x1 x2 x3)
 
 instance Binary TypeInfo where
-        put (TI x1 x2) = do put x1
-                            put x2
+        put (TI x1 x2 x3) = do put x1
+                               put x2
+                               put x3
         get = do x1 <- get
                  x2 <- get
-                 return (TI x1 x2)
+                 x3 <- get
+                 return (TI x1 x2 x3)
 
 instance Binary SynContext where
         put x

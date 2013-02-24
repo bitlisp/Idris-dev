@@ -3,10 +3,10 @@ module Network.Cgi
 import System
 
 public
-Vars : Set
+Vars : Type
 Vars = List (String, String)
 
-record CGIInfo : Set where
+record CGIInfo : Type where
        CGISt : (GET : Vars) ->
                (POST : Vars) ->
                (Cookies : Vars) ->
@@ -21,11 +21,22 @@ add_Output : String -> CGIInfo -> CGIInfo
 add_Output str st = record { Output = Output st ++ str } st
 
 abstract
-data CGI : Set -> Set where
+data CGI : Type -> Type where
     MkCGI : (CGIInfo -> IO (a, CGIInfo)) -> CGI a
 
 getAction : CGI a -> CGIInfo -> IO (a, CGIInfo)
 getAction (MkCGI act) = act
+
+instance Functor CGI where
+    fmap f (MkCGI c) = MkCGI (\s => do (a, i) <- c s
+                                       return (f a, i))
+
+instance Applicative CGI where
+    pure v = MkCGI (\s => return (v, s))
+    
+    (MkCGI a) <$> (MkCGI b) = MkCGI (\s => do (f, i) <- a s
+                                              (c, j) <- b i
+                                              return (f c, j))
 
 instance Monad CGI where {
     (>>=) (MkCGI f) k = MkCGI (\s => do v <- f s

@@ -1,6 +1,7 @@
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE PatternGuards, DeriveFunctor, TypeSynonymInstances #-}
 
-module Core.CaseTree(CaseDef(..), SC(..), CaseAlt(..), Phase(..), CaseTree,
+module Core.CaseTree(CaseDef(..), SC, SC'(..), CaseAlt, CaseAlt'(..), 
+                     Phase(..), CaseTree,
                      simpleCase, small, namesUsed, findCalls, findUsedArgs) where
 
 import Core.TT
@@ -13,25 +14,29 @@ import Debug.Trace
 data CaseDef = CaseDef [Name] SC [Term]
     deriving Show
 
-data SC = Case Name [CaseAlt] -- invariant: lowest tags first
-        | ProjCase Term [CaseAlt] -- special case for projections
-        | STerm Term
-        | UnmatchedCase String -- error message
-        | ImpossibleCase -- already checked to be impossible
-    deriving (Eq, Ord)
+data SC' t = Case Name [CaseAlt' t] -- invariant: lowest tags first
+           | ProjCase t [CaseAlt' t] -- special case for projections
+           | STerm t
+           | UnmatchedCase String -- error message
+           | ImpossibleCase -- already checked to be impossible
+    deriving (Eq, Ord, Functor)
 {-! 
 deriving instance Binary SC 
 !-}
 
-data CaseAlt = ConCase Name Int [Name] SC
-             | ConstCase Const         SC
-             | DefaultCase             SC
-    deriving (Show, Eq, Ord)
+type SC = SC' Term
+
+data CaseAlt' t = ConCase Name Int [Name] (SC' t)
+                | ConstCase Const         (SC' t)
+                | DefaultCase             (SC' t)
+    deriving (Show, Eq, Ord, Functor)
 {-! 
 deriving instance Binary CaseAlt 
 !-}
 
-instance Show SC where
+type CaseAlt = CaseAlt' Term
+
+instance Show t => Show (SC' t) where
     show sc = show' 1 sc
       where
         show' i (Case n alts) = "case " ++ show n ++ " of\n" ++ indent i ++ 
@@ -68,12 +73,19 @@ instance TermSize CaseAlt where
     termsize n (DefaultCase s) = termsize n s
 
 -- simple terms can be inlined trivially - good for primitives in particular
-small :: Name -> SC -> Bool
-small n t = termsize n t < 50
+-- To avoid duplicating work, don't inline something which uses one
+-- of its arguments in more than one place
+
+small :: Name -> [Name] -> SC -> Bool
+small n args t = let as = findAllUsedArgs t args in
+                     length as == length (nub as) && 
+                     termsize n t < 5
 
 namesUsed :: SC -> [Name]
 namesUsed sc = nub $ nu' [] sc where
     nu' ps (Case n alts) = nub (concatMap (nua ps) alts) \\ [n]
+    nu' ps (ProjCase t alts) = nub $ (nut ps t ++ 
+                                      (concatMap (nua ps) alts))
     nu' ps (STerm t)     = nub $ nut ps t
     nu' ps _ = []
 
@@ -84,6 +96,7 @@ namesUsed sc = nub $ nu' [] sc where
     nut ps (P _ n _) | n `elem` ps = []
                      | otherwise = [n]
     nut ps (App f a) = nut ps f ++ nut ps a
+    nut ps (Proj t _) = nut ps t
     nut ps (Bind n (Let t v) sc) = nut ps v ++ nut (n:ps) sc
     nut ps (Bind n b sc) = nut (n:ps) sc
     nut ps _ = []
@@ -95,6 +108,7 @@ namesUsed sc = nub $ nu' [] sc where
 findCalls :: SC -> [Name] -> [(Name, [[Name]])]
 findCalls sc topargs = nub $ nu' topargs sc where
     nu' ps (Case n alts) = nub (concatMap (nua (n : ps)) alts)
+    nu' ps (ProjCase t alts) = nub (nut ps t ++ concatMap (nua ps) alts)
     nu' ps (STerm t)     = nub $ nut ps t
     nu' ps _ = []
 
@@ -110,6 +124,7 @@ findCalls sc topargs = nub $ nu' topargs sc where
                   else [(n, map argNames args)] ++ concatMap (nut ps) args
         | otherwise = nut ps f ++ nut ps a
     nut ps (Bind n (Let t v) sc) = nut ps v ++ nut (n:ps) sc
+    nut ps (Proj t _) = nut ps t
     nut ps (Bind n b sc) = nut (n:ps) sc
     nut ps _ = []
 
@@ -132,8 +147,11 @@ directUse _ = []
 -- Find all directly used arguments (i.e. used but not in function calls)
 
 findUsedArgs :: SC -> [Name] -> [Name]
-findUsedArgs sc topargs = filter (\x -> x `elem` topargs) (nub $ nu' sc) where
+findUsedArgs sc topargs = nub (findAllUsedArgs sc topargs)
+
+findAllUsedArgs sc topargs = filter (\x -> x `elem` topargs) (nu' sc) where
     nu' (Case n alts) = n : concatMap nua alts
+    nu' (ProjCase t alts) = directUse t ++ concatMap nua alts
     nu' (STerm t)     = directUse t
     nu' _             = []
 
@@ -145,23 +163,25 @@ data Phase = CompileTime | RunTime
     deriving (Show, Eq)
 
 -- Generate a simple case tree
--- Work Left to Right at Compile Time 
+-- Work Right to Left
 
-simpleCase :: Bool -> Bool -> Phase -> FC -> [([Name], Term, Term)] -> TC CaseDef
+simpleCase :: Bool -> Bool -> Phase -> FC -> [([Name], Term, Term)] -> 
+              TC CaseDef
 simpleCase tc cover phase fc [] 
                  = return $ CaseDef [] (UnmatchedCase "No pattern clauses") []
 simpleCase tc cover phase fc cs 
       = let proj       = phase == RunTime
             pats       = map (\ (avs, l, r) -> 
-                                   (avs, rev phase (toPats tc l), (l, r))) cs
+                                   (avs, toPats tc l, (l, r))) cs
             chkPats    = mapM chkAccessible pats in
             case chkPats of
                 OK pats ->
                     let numargs    = length (fst (head pats)) 
                         ns         = take numargs args
+                        (ns', ps') = order ns pats
                         (tree, st) = runState 
-                                         (match (rev phase ns) pats (defaultCase cover)) ([], numargs)
-                        t          = CaseDef ns (prune proj (depatt ns tree)) (fst st) in
+                                         (match ns' ps' (defaultCase cover)) ([], numargs)
+                        t          = CaseDef ns (prune proj (depatt ns' tree)) (fst st) in
                         if proj then return (stripLambdas t) else return t
                 Error err -> Error (At fc err)
     where args = map (\i -> MN i "e") [0..]
@@ -177,9 +197,6 @@ simpleCase tc cover phase fc cs
           acc (PV x : xs) n | x == n = OK ()
           acc (PCon _ _ ps : xs) n = acc (ps ++ xs) n
           acc (_ : xs) n = acc xs n
-
-rev CompileTime = id
-rev _ = reverse
 
 data Pat = PCon Name Int [Pat]
          | PConst Const
@@ -209,7 +226,11 @@ toPat tc tms = evalState (mapM (\x -> toPat' x []) tms) []
     toPat' (Constant ChType)  [] | tc = return $ PCon (UN "Char")   3 [] 
     toPat' (Constant StrType) [] | tc = return $ PCon (UN "String") 4 [] 
     toPat' (Constant PtrType) [] | tc = return $ PCon (UN "Ptr")    5 [] 
-    toPat' (Constant BIType)  [] | tc = return $ PCon (UN "Integer") 6 [] 
+    toPat' (Constant BIType)  [] | tc = return $ PCon (UN "Integer") 6 []
+    toPat' (Constant B8Type)  [] | tc = return $ PCon (UN "Bits8")  7 []
+    toPat' (Constant B16Type) [] | tc = return $ PCon (UN "Bits16") 8 []
+    toPat' (Constant B32Type) [] | tc = return $ PCon (UN "Bits32") 9 []
+    toPat' (Constant B64Type) [] | tc = return $ PCon (UN "Bits64") 10 []
 
     toPat' (P Bound n _)      []   = do ns <- get
                                         if n `elem` ns 
@@ -242,6 +263,32 @@ partition ms@(m : _)
                        Cons cons : partition rest
 partition xs = error $ "Partition " ++ show xs
 
+-- reorder the patterns so that the one with most distinct names
+-- comes next. Take rightmost first, otherwise (i.e. pick value rather
+-- than dependency)
+
+order :: [Name] -> [Clause] -> ([Name], [Clause])
+order [] cs = ([], cs)
+order ns [] = (ns, [])
+order ns cs = let patnames = transpose (map (zip ns) (map fst cs))
+                  pats' = transpose (sortBy moreDistinct (reverse patnames)) in
+                  (getNOrder pats', zipWith rebuild pats' cs)
+  where
+    getNOrder [] = error $ "Failed order on " ++ show (ns, cs)
+    getNOrder (c : _) = map fst c
+
+    rebuild patnames clause = (map snd patnames, snd clause)
+
+    moreDistinct xs ys = compare (numNames [] (map snd ys)) 
+                                 (numNames [] (map snd xs))
+
+    numNames xs (PCon n _ _ : ps) 
+        | not (Left n `elem` xs) = numNames (Left n : xs) ps
+    numNames xs (PConst c : ps)
+        | not (Right c `elem` xs) = numNames (Right c : xs) ps
+    numNames xs (_ : ps) = numNames xs ps
+    numNames xs [] = length xs
+
 match :: [Name] -> [Clause] -> SC -- error case
                             -> State CS SC
 match [] (([], ret) : xs) err 
@@ -251,8 +298,7 @@ match [] (([], ret) : xs) err
             Impossible -> return ImpossibleCase
             tm -> return $ STerm tm -- run out of arguments
 match vs cs err = do let ps = partition cs
-                     cs <- mixture vs ps err
-                     return cs
+                     mixture vs ps err
 
 mixture :: [Name] -> [Partition] -> SC -> State CS SC
 mixture vs [] err = return err
@@ -344,7 +390,7 @@ varRule (v : vs) alts err =
     repVar v (PV p : ps , (lhs, res)) = (ps, (lhs, subst p (P Bound v Erased) res))
     repVar v (PAny : ps , res) = (ps, res)
 
--- fix: case e of S k -> f (S k)  ==> case e of S k -. f e
+-- fix: case e of S k -> f (S k)  ==> case e of S k -> f e
 depatt :: [Name] -> SC -> SC
 depatt ns tm = dp [] tm
   where
@@ -364,7 +410,8 @@ depatt ns tm = dp [] tm
         where
           applyMap [] nt cn pty args' = mkApp (P nt cn pty) args'
           applyMap ((x, (n, args)) : ms) nt cn pty args'
-            | and ((n == cn) : zipWith same args args') = P Ref x Erased
+            | and ((length args == length args') :
+                     (n == cn) : zipWith same args args') = P Ref x Erased
             | otherwise = applyMap ms nt cn pty args'
           same n (P _ n' _) = n == n'
           same _ _ = False

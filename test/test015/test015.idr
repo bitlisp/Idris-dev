@@ -3,7 +3,7 @@ module Main
 import Parity
 import System
 
-data Bit : Nat -> Set where
+data Bit : Nat -> Type where
      b0 : Bit O
      b1 : Bit (S O) 
 
@@ -15,19 +15,17 @@ instance Show (Bit n) where
 
 infixl 5 #
 
-data Binary : (width : Nat) -> (value : Nat) -> Set where
+data Binary : (width : Nat) -> (value : Nat) -> Type where
      zero : Binary O O
      (#)  : Binary w v -> Bit bit -> Binary (S w) (bit + 2 * v)
 
 instance Show (Binary w k) where
-     show = show' where
-        show' : Binary w' k' -> String
-        show' zero = ""
-        show' (bin # bit) = show bin ++ show bit
+     show zero = ""
+     show (bin # bit) = show bin ++ show bit
 
 pad : Binary w n -> Binary (S w) n
 pad zero = zero # b0 
-pad (num # x) = pad num # x
+pad (num # x) = pad num # x
 
 natToBin : (width : Nat) -> (n : Nat) ->
            Maybe (Binary width n)
@@ -37,7 +35,7 @@ natToBin (S k) O = do x <- natToBin k O
                       Just (pad x)
 natToBin (S w) (S k) with (parity k)
   natToBin (S w) (S (plus j j)) | even = do jbin <- natToBin w j
-                                            let value = jbin # b1
+                                            let value = jbin # b1
                                             ?ntbEven
   natToBin (S w) (S (S (plus j j))) | odd = do jbin <- natToBin w (S j)
                                                let value = jbin # b0

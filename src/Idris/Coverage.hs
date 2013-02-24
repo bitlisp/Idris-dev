@@ -33,23 +33,23 @@ genMissing fn args sc
 -- covering...)
 
 mkPatTm :: PTerm -> Idris Term
-mkPatTm t = do i <- get
-               let timp = addImpl' True [] i t
+mkPatTm t = do i <- getIState
+               let timp = addImpl' True [] [] i t
                evalStateT (toTT timp) 0
   where
-    toTT (PRef _ n) = do i <- lift $ get
+    toTT (PRef _ n) = do i <- lift getIState
                          case lookupDef Nothing n (tt_ctxt i) of
                               [TyDecl nt _] -> return $ P nt n Erased
                               _ -> return $ P Ref n Erased
     toTT (PApp _ t args) = do t' <- toTT t
                               args' <- mapM (toTT . getTm) args
                               return $ mkApp t' args'
-    toTT _ = do v <- get 
+    toTT _ = do v <- get
                 put (v + 1)
                 return (P Bound (MN v "imp") Erased) 
 
 mkPTerm :: Name -> [TT Name] -> Idris PTerm
-mkPTerm f args = do i <- get
+mkPTerm f args = do i <- getIState
                     let fapp = mkApp (P Bound f Erased) (map eraseName args)
                     return $ delab i fapp
   where eraseName (App f a) = App (eraseName f) (eraseName a)
@@ -90,7 +90,7 @@ dropDefault (c : cs) = c : dropDefault cs
 dropDefault [] = [] 
 
 expandTree :: SC -> Idris SC
-expandTree (Case n alts) = do i <- get
+expandTree (Case n alts) = do i <- getIState
                               as <- expandAlts i (dropDefault alts) 
                                                  (getDefault alts)
                               alts' <- mapM expandTreeA as
@@ -110,8 +110,8 @@ expandAlts i all@(ConCase n _ _ _ : alts) def
     | (TyDecl c@(DCon _ arity) ty : _) <- lookupDef Nothing n (tt_ctxt i)
          = do let tyn = getTy n (tt_ctxt i)
               case lookupCtxt Nothing tyn (idris_datatypes i) of
-                  (TI ns _ : _) -> do let ps = map mkPat ns
-                                      return $ addAlts ps (altsFor all) all
+                  (TI ns _ _: _) -> do let ps = map mkPat ns
+                                       return $ addAlts ps (altsFor all) all
                   _ -> return all
   where
     altsFor [] = []
@@ -164,7 +164,9 @@ genClauses fc n xs given
                         (p : _) -> p
                         _ -> repeat (pexp Placeholder)
         let tryclauses = mkClauses parg all_args
-        let new = mnub i $ filter (noMatch i) tryclauses 
+        logLvl 2 $ show (length tryclauses) ++ " initially to check"
+        let new = mnub i $ filter (noMatch i) tryclauses
+        logLvl 1 $ show (length new) ++ " clauses to check for impossibility"
         logLvl 7 $ "New clauses: \n" ++ showSep "\n" (map (showImp True) new)
 --           ++ " from:\n" ++ showSep "\n" (map (showImp True) tryclauses) 
         return new
@@ -202,13 +204,18 @@ genClauses fc n xs given
                                 as' <- mkArg as
                                 return (a':as')
 
+fnub xs = fnub' [] xs where
+  fnub' acc (x : xs) | x `elem` acc = fnub' acc xs
+                     | otherwise = fnub' (x : acc) xs
+  fnub' acc [] = acc
+
 -- FIXME: Just look for which one is the deepest, then generate all 
 -- possibilities up to that depth.
 
 genAll :: IState -> [PTerm] -> [PTerm]
 genAll i args = case filter (/=Placeholder) $ concatMap otherPats (nub args) of
                     [] -> [Placeholder]
-                    xs -> xs
+                    xs -> nub xs
   where 
     conForm (PApp _ (PRef fc n) _) = isConName Nothing n (tt_ctxt i)
     conForm (PRef fc n) = isConName Nothing n (tt_ctxt i)
@@ -225,7 +232,7 @@ genAll i args = case filter (/=Placeholder) $ concatMap otherPats (nub args) of
                  let p = PApp fc (PRef fc n) (zipWith upd xs' xs)
                  let tyn = getTy n (tt_ctxt i)
                  case lookupCtxt Nothing tyn (idris_datatypes i) of
-                         (TI ns _ : _) -> p : map (mkPat fc) (ns \\ [n])
+                         (TI ns _ _ : _) -> p : map (mkPat fc) (ns \\ [n])
                          _ -> [p]
     ops fc n arg o = return Placeholder
 
@@ -300,14 +307,14 @@ calcProd i fc n pats = do patsprod <- mapM prodRec pats
      cotype ty 
         | (P _ t _, _) <- unApply (getRetTy ty)
             = case lookupCtxt Nothing t (idris_datatypes i) of
-                   [TI _ True] -> True
+                   [TI _ True _] -> True
                    _ -> False
         | otherwise = False
 
 calcTotality :: [Name] -> FC -> Name -> [([Name], Term, Term)]
                 -> Idris Totality
 calcTotality path fc n pats 
-    = do i <- get
+    = do i <- getIState
          let opts = case lookupCtxt Nothing n (idris_flags i) of
                             [fs] -> fs
                             _ -> []
@@ -360,7 +367,7 @@ checkTotality path fc n
         case t' of
             Total _ -> return t'
             Productive -> return t'
-            e -> do w <- cmdOptSet WarnPartial
+            e -> do w <- cmdOptType WarnPartial
                     if TotalFn `elem` opts
                        then totalityError t'
                        else do when (w && not (PartialFn `elem` opts)) $ 
@@ -370,7 +377,7 @@ checkTotality path fc n
     totalityError t = tclift $ tfail (At fc (Msg (show n ++ " is " ++ show t)))
 
     warnPartial n t
-       = do i <- get
+       = do i <- getIState
             case lookupDef Nothing n (tt_ctxt i) of
                [x] -> do
                   iputStrLn $ show fc ++ ":Warning - " ++ show n ++ " is " ++ show t 
@@ -382,7 +389,8 @@ checkTotality path fc n
 checkDeclTotality :: (FC, Name) -> Idris Totality
 checkDeclTotality (fc, n) 
     = do logLvl 2 $ "Checking " ++ show n ++ " for totality"
-         buildSCG (fc, n)
+--          buildSCG (fc, n)
+--          logLvl 2 $ "Built SCG"
          checkTotality [] fc n
 
 -- Calculate the size change graph for this definition
@@ -398,19 +406,22 @@ checkDeclTotality (fc, n)
 
 buildSCG :: (FC, Name) -> Idris ()
 buildSCG (_, n) = do
-   ist <- get
+   ist <- getIState
    case lookupCtxt Nothing n (idris_callgraph ist) of
        [cg] -> case lookupDef Nothing n (tt_ctxt ist) of
            [CaseOp _ _ _ _ _ args sc _ _] -> 
-               do logLvl 5 $ "Building SCG for " ++ show n ++ " from\n" 
+               do logLvl 3 $ "Building SCG for " ++ show n ++ " from\n" 
                                 ++ show sc
                   let newscg = buildSCG' ist sc args
                   logLvl 5 $ show newscg
                   addToCG n ( cg { scg = newscg } )
+       [] -> logLvl 5 $ "Could not build SCG for " ++ show n ++ "\n"
+       x -> error $ "buildSCG: " ++ show (n, x)
 
 buildSCG' :: IState -> SC -> [Name] -> [SCGEntry] 
-buildSCG' ist sc args = nub $ scg sc (zip args args) 
-                              (zip args (zip args (repeat Same)))
+buildSCG' ist sc args = -- trace ("Building SCG for " ++ show sc) $
+                           nub $ scg sc (zip args args) 
+                                 (zip args (zip args (repeat Same)))
    where
       scg :: SC -> [(Name, Name)] -> -- local var, originating top level var
              [(Name, (Name, SizeChange))] -> -- orig to new,  and relationship
@@ -437,7 +448,7 @@ buildSCG' ist sc args = nub $ scg sc (zip args args)
                       map (getRel nty) (map (fst . unApply . getRetTy) args)
         where
           getRel ty (P _ n' _) | n' == ty = (n, Smaller)
-          getRel ty _ = (n, Unknown)
+          getRel ty t = (n, Unknown)
 
       scgAlt x vars szs (ConCase n _ args sc)
            -- all args smaller than top variable of x in sc
@@ -446,7 +457,7 @@ buildSCG' ist sc args = nub $ scg sc (zip args args)
               = let arel = argRels n
                     szs' = zipWith (\arg (_,t) -> (arg, (x, t))) args arel 
                                                        ++ szs
-                    vars' = zip args (repeat tvar) ++ vars in
+                    vars' = nub (zip args (repeat tvar) ++ vars) in
                     scg sc vars' szs'
          | otherwise = scg sc vars szs
       scgAlt x vars szs (ConstCase _ sc) = scg sc vars szs
@@ -459,13 +470,13 @@ buildSCG' ist sc args = nub $ scg sc (zip args args)
             = let rest = concatMap (\x -> scgTerm x vars szs) args in
                   case lookup fn vars of
                        Just _ -> rest
-                       Nothing -> (fn, map (mkChange szs) args) : rest 
+                       Nothing -> nub $ (fn, map (mkChange szs) args) : rest 
       scgTerm (App f a) vars szs
             = scgTerm f vars szs ++ scgTerm a vars szs
       scgTerm (Bind n (Let t v) e) vars szs
             = scgTerm v vars szs ++ scgTerm e vars szs
       scgTerm (Bind n _ e) vars szs
-            = scgTerm e ((n, n) : vars) szs
+            = scgTerm e (nub ((n, n) : vars)) szs
       scgTerm (P _ fn _) vars szs
             = case lookup fn vars of
                    Just _ -> []
@@ -491,11 +502,12 @@ buildSCG' ist sc args = nub $ scg sc (zip args args)
 
 checkSizeChange :: Name -> Idris Totality
 checkSizeChange n = do
-   ist <- get
+   ist <- getIState
    case lookupCtxt Nothing n (idris_callgraph ist) of
        [cg] -> do let ms = mkMultiPaths ist [] (scg cg)
-                  logLvl 6 ("Multipath for " ++ show n ++ ":\n" ++
+                  logLvl 5 ("Multipath for " ++ show n ++ ":\n" ++
                             "from " ++ show (scg cg) ++ "\n" ++
+                            show (length ms) ++ "\n" ++ 
                             showSep "\n" (map show ms))
                   logLvl 6 (show cg)
                   -- every multipath must have an infinitely descending 
@@ -503,8 +515,11 @@ checkSizeChange n = do
                   -- also need to checks functions called are all total 
                   -- (Unchecked is okay as we'll spot problems here)
                   let tot = map (checkMP ist (length (argsdef cg))) ms
-                  logLvl 3 $ "Paths for " ++ show n ++ " yield " ++ (show tot)
+                  logLvl 4 $ "Generated " ++ show (length tot) ++ " paths"
+                  logLvl 6 $ "Paths for " ++ show n ++ " yield " ++ (show tot)
                   return (noPartial tot)
+       [] -> do logLvl 5 $ "No paths for " ++ show n
+                return Unchecked
 
 type MultiPath = [SCGEntry]
 
@@ -514,10 +529,11 @@ mkMultiPaths ist path cg
     = concat (map extend cg)
   where extend (nextf, args) 
            | (nextf, args) `elem` path = [ reverse ((nextf, args) : path) ]
-           | otherwise 
+           | [Unchecked] <- lookupTotal nextf (tt_ctxt ist) 
                = case lookupCtxt Nothing nextf (idris_callgraph ist) of
                     [ncg] -> mkMultiPaths ist ((nextf, args) : path) (scg ncg) 
                     _ -> [ reverse ((nextf, args) : path) ]
+           | otherwise = [ reverse ((nextf, args) : path) ]
 
 --     do (nextf, args) <- cg
 --          if ((nextf, args) `elem` path)
@@ -529,63 +545,83 @@ mkMultiPaths ist path cg
 -- If any route along the multipath leads to infinite descent, we're fine.
 -- Try a route beginning with every argument.
 --   If we reach a point we've been to before, but with a smaller value,
---   that means there is an infinitely descending path.
+--   that means there is an infinitely descending path from that argument.
 
 checkMP :: IState -> Int -> MultiPath -> Totality
 checkMP ist i mp = if i > 0 
                      then collapse (map (tryPath 0 [] mp) [0..i-1])
                      else tryPath 0 [] mp 0
   where
+    tryPath' d path mp arg 
+           = let res = tryPath d path mp arg in
+                 trace (show mp ++ "\n" ++ show arg ++ " " ++ show res) res
+
     tryPath :: Int -> [(SCGEntry, Int)] -> MultiPath -> Int -> Totality
     tryPath desc path [] _ = Total []
+--     tryPath desc path ((UN "believe_me", _) : _) arg
+--             = Partial BelieveMe
     -- if we get to a constructor, it's fine as long as it's strictly positive
     tryPath desc path ((f, _) :es) arg
         | [TyDecl (DCon _ _) _] <- lookupDef Nothing f (tt_ctxt ist)
             = case lookupTotal f (tt_ctxt ist) of
-                   [Total _] -> Total []
+                   [Total _] -> Unchecked -- okay so far
                    [Partial _] -> Partial (Other [f])
                    x -> error (show x)
         | [TyDecl (TCon _ _) _] <- lookupDef Nothing f (tt_ctxt ist)
             = Total []
---     tryPath desc path (e@(f, []) : es) arg
---         | [Unchecked] <- lookupTotal f (tt_ctxt ist) =
---              tryPath (-10000) ((e, desc) : path) es 0
+    tryPath desc path (e@(f, []) : es) arg
+        | e `elem` es = Partial (Mutual [f])
     tryPath desc path (e@(f, nextargs) : es) arg
         | Just d <- lookup e path
-            = if (desc - d) > 0 
-                   then Total []
+            = if desc > 0 
+                   then -- trace ("Descent " ++ show (desc - d) ++ " "
+                        --       ++ show (path, e)) $
+                        Total []
                    else Partial (Mutual (map (fst . fst) path ++ [f]))
         | [Unchecked] <- lookupTotal f (tt_ctxt ist) =
-            let argspos = zip nextargs [0..] in
-                collapse' (Partial (Mutual (map (fst . fst) path ++ [f]))) $ 
-                  do (arg, pos) <- argspos
-                     case arg of
-                        Nothing -> -- don't know, but it's okay if the
+            let argspos = collapseNothing (zip nextargs [0..]) in
+                collapse' Unchecked $ 
+                  do (a, pos) <- argspos
+                     case a of
+                        Nothing -> -- don't know, but if the
                                    -- rest definitely terminates without
-                                   -- any cycles with route so far
-                            map (tryPath (-10000) ((e, desc):path) es)
-                                [0..length nextargs - 1]
+                                   -- any cycles with route so far,
+                                   -- then we might yet be total
+                            case collapse (map (tryPath (-10000) ((e, desc):path) es)
+                                          [0..length nextargs - 1]) of
+                                Total _ -> return Unchecked
+                                x -> return x
                         Just (nextarg, sc) ->
-                          case sc of
-                            Same -> return $ tryPath desc ((e, desc):path) 
-                                                     es
-                                                     nextarg
-                            Smaller -> return $ tryPath (desc+1) 
-                                                        ((e, desc):path) 
-                                                        es
-                                                        nextarg
-                            _ -> trace ("Shouldn't happen " ++ show e) $ 
-                                    return (Partial Itself)
-        | [Total _] <- lookupTotal f (tt_ctxt ist) = Total []
+                          if nextarg == arg then
+                            case sc of
+                              Same -> return $ tryPath desc ((e, desc) : path)
+                                                       es pos
+                              Smaller -> return $ tryPath (desc+1) 
+                                                          ((e, desc):path) 
+                                                          es
+                                                          pos
+                              _ -> trace ("Shouldn't happen " ++ show e) $ 
+                                      return (Partial Itself)
+                            else return Unchecked
+        | [Total a] <- lookupTotal f (tt_ctxt ist) = Total a
         | [Partial _] <- lookupTotal f (tt_ctxt ist) = Partial (Other [f])
-        | otherwise = Total []
+        | otherwise = Unchecked
+
+collapseNothing ((Nothing, _) : xs) 
+   = filter (\ (x, _) -> case x of
+                              Nothing -> False
+                              _ -> True) xs
+collapseNothing (x : xs) = x : collapseNothing xs
+collapseNothing [] = []
 
 noPartial (Partial p : xs) = Partial p
 noPartial (_ : xs)         = noPartial xs
 noPartial []               = Total [] 
 
-collapse xs = collapse' (Partial Itself) xs
-collapse' def (Total r  : xs)  = Total r
+collapse xs = collapse' Unchecked xs
+collapse' def (Total r : xs)   = Total r
+collapse' def (Unchecked : xs) = collapse' def xs 
 collapse' def (d : xs)         = collapse' d xs
+-- collapse' Unchecked []         = Total []
 collapse' def []               = def
 

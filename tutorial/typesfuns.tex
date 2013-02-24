@@ -36,7 +36,9 @@ An \Idris{} file consists of an optional module declaration (here
 however \Idris{} programs can consist of several modules, and the definitions
 in each module each have their own namespace, as we will discuss in Section
 \ref{sect:namespaces}) and a
-collection of declarations and definitions. Each definition must have a type
+collection of declarations and definitions. The order of definitions is
+significant --- functions and data types must be defined before use.
+Each definition must have a type
 declaration (here, \texttt{x : Int}, \texttt{foo : String}, etc).
 Indentation is significant --- a new declaration begins at the same level
 of indentation as the preceding declaration. Alternatively, declarations
@@ -208,24 +210,12 @@ Indentation is significant --- functions in the \texttt{where} block must be ind
 further than the outer function.
 
 \textbf{Scope:} 
-Any names which are visible in the outer scope are also visible in the \texttt{where}
-clause (unless they have been redefined, such as \texttt{xs} here).
-\emph{However}, names which appear in the type are \emph{not} in scope. In particular,
-in the above example, the \texttt{a} in the top level type and the \texttt{a} in the
-auxiliary definifion \texttt{revAcc} are \emph{not} the same. If this is the required
-behaviour, the \texttt{a} can be brought into scope as follows:
+Any names which are visible in the outer scope are also visible in the
+\texttt{where} clause (unless they have been redefined, such as \texttt{xs}
+here). A name which appears only in the type will be in scope in the
+\texttt{where} clause if it is a \remph{parameter} to one of the types,
+i.e. it is fixed across the entire structure. 
 
-\begin{SaveVerbatim}{revwhereb}
-
-reverse : List a -> List a
-reverse {a} xs = revAcc [] xs where
-  revAcc : List a -> List a -> List a
-  ...
-
-\end{SaveVerbatim}
-\useverb{revwhereb}
-
-\noindent
 As well as functions, \texttt{where} blocks can include local data
 declarations, such as the following where \texttt{MyLT} is not accessible outside
 the definition of \texttt{foo}:
@@ -245,6 +235,38 @@ foo x = case isLT of
 \end{SaveVerbatim}
 \useverb{wheredata}
 
+\noindent
+In general, functions defined in a \texttt{where} clause need a type declaration
+just like any top level function. However, the type declaration for
+a function \texttt{f} \remph{can} be omitted if:
+
+\begin{itemize}
+\item \texttt{f} appears in the right hand side of the top level definition 
+\item The type of \texttt{f} can be completely determined from its first
+application
+\end{itemize}
+
+\noindent
+So, for example, the following definitions are legal:
+
+\begin{SaveVerbatim}{whereinfer}
+
+even : Nat -> Bool 
+even O = True 
+even (S k) = odd k where 
+  odd O = False 
+  odd (S k) = even k 
+
+test : Num a => List a 
+test = [c 1, c 2, d 3] 
+  where c x = 42 + x 
+        d y = c (y + 1 + z y) 
+           where z w = y + w 
+
+\end{SaveVerbatim}
+\useverb{whereinfer}
+
+
 \subsection{Dependent Types}
 
 \subsubsection{Vectors}
@@ -255,7 +277,7 @@ we declare vectors as follows:
 
 \begin{SaveVerbatim}{vect}
 
-data Vect : Set -> Nat -> Set where
+data Vect : Type -> Nat -> Type where
    Nil  : Vect a O
    (::) : a -> Vect a k -> Vect a (S k)
 
@@ -271,7 +293,7 @@ Ambiguous constructor names can normally be resolved from context.
 This declares a family of types, and so the form of the declaration is rather
 different from the simple type declarations above. We explicitly state the type
 of the type constructor \tTC{Vect} --- it takes a type and a \tTC{Nat} as an
-argument, where \tTC{Set} stands for the type of types. We say that \tTC{Vect}
+argument, where \tTC{Type} stands for the type of types. We say that \tTC{Vect}
 is \emph{parameterised} by a type, and \emph{indexed} over \tTC{Nat}. Each
 constructor targets a different part of the family of types. \tDC{Nil} can only
 be used to construct vectors with zero length, and \tDC{::} to construct
@@ -336,7 +358,7 @@ They are declared as follows (again, in the prelude):
 
 \begin{SaveVerbatim}{findecl}
 
-data Fin : Nat -> Set where
+data Fin : Nat -> Type where
    fO : Fin (S k)
    fS : Fin k -> Fin (S k)
 
@@ -399,7 +421,7 @@ arguments to \texttt{index}. We could also write the type of \texttt{index} as:
 
 \begin{SaveVerbatim}{vindeximpty}
 
-index : {a:Set} -> {n:Nat} -> Fin n -> Vect a n -> a
+index : {a:Type} -> {n:Nat} -> Fin n -> Vect a n -> a
 
 \end{SaveVerbatim}
 \useverb{vindeximpty}
@@ -447,7 +469,7 @@ definition, which defines a predicate on vectors:
 
 \begin{SaveVerbatim}{elem}
 
-data Elem : a -> Vect a n -> Set where
+data Elem : a -> Vect a n -> Type where
    here :  {x:a} ->   {xs:Vect a n} -> Elem x (x :: xs)
    there : {x,y:a} -> {xs:Vect a n} -> Elem x xs -> Elem x (y :: xs)
 
@@ -479,12 +501,39 @@ ordering of any implicit arguments which can appear within the block:
 \begin{SaveVerbatim}{elemusing}
 
 using (x:a, y:a, xs:Vect a n)
-  data Elem : a -> Vect a n -> Set where
+  data Elem : a -> Vect a n -> Type where
      here  : Elem x (x :: xs)
      there : Elem x xs -> Elem x (y :: xs)
 
 \end{SaveVerbatim}
 \useverb{elemusing}
+
+\subsubsection*{Note: Declaration Order and \texttt{mutual} blocks}
+
+In general, functions and data types must be defined before use, since
+dependent types allow functions to appear as part of types, and their
+reduction behaviour to affect type checking. However, this
+restriction can be relaxed by using a \texttt{mutual} block, which allows
+data types and functions to be defined simultaneously:
+
+\begin{SaveVerbatim}{mutual}
+
+mutual
+  even : Nat -> Bool
+  even O = True
+  even (S k) = odd k
+
+  odd : Nat -> Bool
+  odd O = False
+  odd (S k) = even k
+
+\end{SaveVerbatim}
+\useverb{mutual}
+
+\noindent
+In a \texttt{mutual} block, first all of the type declarations are added,
+then the function bodies. As a result, none of the function types can depend
+on the reduction behaviour of any of the functions in the block.
 
 \subsection{I/O}
 
@@ -613,7 +662,7 @@ We have already seen the \texttt{List} and \texttt{Vect} data types:
 
 data List a = Nil | (::) a (List a)
 
-data Vect : Set -> Nat -> Set where
+data Vect : Type -> Nat -> Type where
    Nil  : Vect a O
    (::) : a -> Vect a k -> Vect a (S k)
 
@@ -797,8 +846,8 @@ the value of the first element:
 
 \begin{SaveVerbatim}{sigma}
 
-data Exists : (A : Set) -> (P : A -> Set) -> Set where
-   Ex_intro : {P : A -> Set} -> (a : A) -> P a -> Exists A P
+data Exists : (A : Type) -> (P : A -> Type) -> Type where
+   Ex_intro : {P : A -> Type} -> (a : A) -> P a -> Exists A P
 
 \end{SaveVerbatim}
 \useverb{sigma}
@@ -861,7 +910,7 @@ If the \texttt{Vect} is empty, the result is easy:
 
 \begin{SaveVerbatim}{vfilternil}
 
-filter p Nil = (_ , [])
+filter p Nil = (_ ** [])
 
 \end{SaveVerbatim}
 \useverb{vfilternil}
@@ -890,7 +939,7 @@ value is true:
 
 \begin{SaveVerbatim}{sotype}
 
-data so : Bool -> Set where
+data so : Bool -> Type where
     oh : so True
 
 \end{SaveVerbatim}
@@ -908,7 +957,7 @@ inBounds : Int -> Int -> Bool
 inBounds x y = x >= 0 && x < 640 && y >= 0 && y < 480
 
 drawPoint : (x : Int) -> (y : Int) -> so (inBounds x y) -> IO ()
-drawPoint x y oh = unsafeDrawPoint x y
+drawPoint x y p = unsafeDrawPoint x y
 
 \end{SaveVerbatim}
 \useverb{soexample} 
@@ -1051,7 +1100,7 @@ can represent a person's name and age in a record:
 
 \begin{SaveVerbatim}{recsimpl}
 
-record Person : Set where
+record Person : Type where
     MkPerson : (name : String) ->
                (age : Int) -> Person
 
@@ -1104,7 +1153,7 @@ the record as a whole. For example:
 
 \begin{SaveVerbatim}{deprec}
 
-record Class : Set where
+record Class : Type where
     ClassInfo : (students : Vect Person n) ->
                 (className : String) ->
                 Class

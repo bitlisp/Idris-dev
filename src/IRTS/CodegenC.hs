@@ -14,6 +14,7 @@ import System.Process
 import System.Exit
 import System.IO
 import System.Directory
+import System.FilePath ((</>), (<.>))
 import Control.Monad
 
 codegenC :: [(Name, SDecl)] ->
@@ -30,7 +31,7 @@ codegenC defs out exec incs objs libs dbg
          let h = concatMap toDecl (map fst bc)
          let cc = concatMap (uncurry toC) bc
          d <- getDataDir
-         mprog <- readFile (d ++ "/rts/idris_main.c")
+         mprog <- readFile (d </> "rts" </> "idris_main" <.> "c")
          let cout = headers incs ++ debug dbg ++ h ++ cc ++ 
                      (if (exec == Executable) then mprog else "")
          case exec of
@@ -42,19 +43,26 @@ codegenC defs out exec incs objs libs dbg
              hClose tmph
              let useclang = False
              comp <- getCC
-             let gcc = comp ++ " -I. " ++ objs ++ " -x c " ++ 
-                       (if (exec == Executable) then "" else " -c ") ++
+             libFlags <- getLibFlags
+             incFlags <- getIncFlags
+             let gcc = comp ++ " " ++
                        gccDbg dbg ++
+                       " -I. " ++ objs ++ " -x c " ++ 
+                       (if (exec == Executable) then "" else " -c ") ++
                        " " ++ tmpn ++
-                       " `idris --link` `idris --include` " ++ libs ++
+                       " " ++ libFlags ++
+                       " " ++ incFlags ++
+                       " " ++ libs ++
                        " -o " ++ out
+--              putStrLn gcc
              exit <- system gcc
              when (exit /= ExitSuccess) $
                 putStrLn ("FAILURE: " ++ gcc)
 
-headers [] = "#include <idris_rts.h>\n#include <idris_stdfgn.h>\n" ++
-             "#include <gmp.h>\n#include <assert.h>\n"
-headers (x : xs) = "#include <" ++ x ++ ">\n" ++ headers xs
+headers xs =
+  concatMap
+    (\h -> "#include <" ++ h ++ ">\n")
+    (xs ++ ["idris_rts.h", "idris_bitstring.h", "idris_stdfgn.h", "gmp.h", "assert.h"])
 
 debug TRACE = "#define IDRIS_TRACE\n\n"
 debug _ = ""
@@ -68,7 +76,8 @@ cname n = "_idris_" ++ concatMap cchar (show n)
   where cchar x | isAlpha x || isDigit x = [x]
                 | otherwise = "_" ++ show (fromEnum x) ++ "_"
 
-indent i = take (i * 4) (repeat ' ')
+indent :: Int -> String
+indent n = replicate (n*4) ' '
 
 creg RVal = "RVAL"
 creg (L i) = "LOC(" ++ show i ++ ")"
@@ -97,9 +106,10 @@ bcc i (ASSIGNCONST l c)
     mkConst (Ch c) = "MKINT(" ++ show (fromEnum c) ++ ")"
     mkConst (Str s) = "MKSTR(vm, " ++ show s ++ ")"
     mkConst _ = "MKINT(42424242)"
+bcc i (UPDATE l r) = indent i ++ creg l ++ " = " ++ creg r ++ ";\n"
 bcc i (MKCON l tag args)
-    = indent i ++ creg Tmp ++ " = allocCon(vm, " ++ show (length args) ++ 
-         ", 0); " ++ "SETTAG(" ++ creg Tmp ++ ", " ++ show tag ++ ");\n" ++
+    = indent i ++ "allocCon(" ++ creg Tmp ++ ", vm, " ++ show tag ++ "," ++
+         show (length args) ++ ", 0);\n" ++
       indent i ++ setArgs 0 args ++ "\n" ++ 
       indent i ++ creg l ++ " = " ++ creg Tmp ++ ";\n"
          
@@ -114,12 +124,29 @@ bcc i (PROJECT l loc a) = indent i ++ "PROJECT(vm, " ++ creg l ++ ", " ++ show l
                                       ", " ++ show a ++ ");\n"
 bcc i (PROJECTINTO r t idx)
     = indent i ++ creg r ++ " = GETARG(" ++ creg t ++ ", " ++ show idx ++ ");\n" 
-bcc i (CASE r code def) 
-    = indent i ++ "switch(TAG(" ++ creg r ++ ")) {\n" ++
+bcc i (CASE True r code def) 
+    | length code < 4 = showCase i def code
+  where
+    showCode :: Int -> [BC] -> String
+    showCode i bc = "{\n" ++ indent i ++ concatMap (bcc (i + 1)) bc ++ 
+                    indent i ++ "}\n"
+
+    showCase :: Int -> Maybe [BC] -> [(Int, [BC])] -> String
+    showCase i Nothing [(t, c)] = showCode i c
+    showCase i (Just def) [] = showCode i def
+    showCase i def ((t, c) : cs)
+        = "if (CTAG(" ++ creg r ++ ") == " ++ show t ++ ") " ++ showCode i c
+           ++ "else " ++ showCase i def cs
+
+bcc i (CASE safe r code def) 
+    = indent i ++ "switch(" ++ ctag safe ++ "(" ++ creg r ++ ")) {\n" ++
       concatMap (showCase i) code ++
       showDef i def ++
       indent i ++ "}\n"
   where
+    ctag True = "CTAG"
+    ctag False = "TAG"
+
     showCase i (t, bc) = indent i ++ "case " ++ show t ++ ":\n"
                          ++ concatMap (bcc (i+1)) bc ++ indent (i + 1) ++ "break;\n"
     showDef i Nothing = ""
@@ -127,10 +154,12 @@ bcc i (CASE r code def)
                          ++ concatMap (bcc (i+1)) c ++ indent (i + 1) ++ "break;\n"
 bcc i (CONSTCASE r code def) 
    | intConsts code
-     = indent i ++ "switch(GETINT(" ++ creg r ++ ")) {\n" ++
-       concatMap (showCase i) code ++
-       showDef i def ++
-       indent i ++ "}\n"
+--      = indent i ++ "switch(GETINT(" ++ creg r ++ ")) {\n" ++
+--        concatMap (showCase i) code ++
+--        showDef i def ++
+--        indent i ++ "}\n"
+     = concatMap (iCase (creg r)) code ++
+       indent i ++ "{\n" ++ showDefS i def ++ indent i ++ "}\n"
    | strConsts code
      = concatMap (strCase ("GETSTR(" ++ creg r ++ ")")) code ++
        indent i ++ "{\n" ++ showDefS i def ++ indent i ++ "}\n"
@@ -155,6 +184,12 @@ bcc i (CONSTCASE r code def)
     biCase bv (BI b, bc) =
         indent i ++ "if (bigEqConst(" ++ bv ++ ", " ++ show b ++ ")) {\n"
            ++ concatMap (bcc (i+1)) bc ++ indent i ++ "} else\n"
+    iCase v (I b, bc) =
+        indent i ++ "if (GETINT(" ++ v ++ ") == " ++ show b ++ ") {\n"
+           ++ concatMap (bcc (i+1)) bc ++ indent i ++ "} else\n"
+    iCase v (Ch b, bc) =
+        indent i ++ "if (GETINT(" ++ v ++ ") == " ++ show b ++ ") {\n"
+           ++ concatMap (bcc (i+1)) bc ++ indent i ++ "} else\n"
 
     showCase i (t, bc) = indent i ++ "case " ++ show t ++ ":\n"
                          ++ concatMap (bcc (i+1)) bc ++ 
@@ -170,7 +205,9 @@ bcc i (CALL n) = indent i ++ "CALL(" ++ cname n ++ ");\n"
 bcc i (TAILCALL n) = indent i ++ "TAILCALL(" ++ cname n ++ ");\n"
 bcc i (SLIDE n) = indent i ++ "SLIDE(vm, " ++ show n ++ ");\n"
 bcc i REBASE = indent i ++ "REBASE;\n"
+bcc i (RESERVE 0) = ""
 bcc i (RESERVE n) = indent i ++ "RESERVE(" ++ show n ++ ");\n"
+bcc i (ADDTOP 0) = ""
 bcc i (ADDTOP n) = indent i ++ "ADDTOP(" ++ show n ++ ");\n"
 bcc i (TOPBASE n) = indent i ++ "TOPBASE(" ++ show n ++ ");\n"
 bcc i (BASETOP n) = indent i ++ "BASETOP(" ++ show n ++ ");\n"
@@ -205,6 +242,13 @@ doOp v LPlus [l, r] = v ++ "ADD(" ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LMinus [l, r] = v ++ "INTOP(-," ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LTimes [l, r] = v ++ "MULT(" ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LDiv [l, r] = v ++ "INTOP(/," ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LMod [l, r] = v ++ "INTOP(%," ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LAnd [l, r] = v ++ "INTOP(&," ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LOr [l, r] = v ++ "INTOP(|," ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LXOr [l, r] = v ++ "INTOP(^," ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LSHL [l, r] = v ++ "INTOP(<<," ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LSHR [l, r] = v ++ "INTOP(>>," ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LCompl [x] = v ++ "INTOP(~," ++ creg x ++ ")"
 doOp v LEq [l, r] = v ++ "INTOP(==," ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LLt [l, r] = v ++ "INTOP(<," ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LLe [l, r] = v ++ "INTOP(<=," ++ creg l ++ ", " ++ creg r ++ ")"
@@ -223,8 +267,10 @@ doOp v LFGe [l, r] = v ++ "FLOATBOP(>=," ++ creg l ++ ", " ++ creg r ++ ")"
 
 doOp v LBPlus [l, r] = v ++ "idris_bigPlus(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LBMinus [l, r] = v ++ "idris_bigMinus(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LBDec [l] = v ++ "idris_bigMinus(vm, " ++ creg l ++ ", MKINT(1))"
 doOp v LBTimes [l, r] = v ++ "idris_bigTimes(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LBDiv [l, r] = v ++ "idris_bigDivide(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
+doOp v LBMod [l, r] = v ++ "idris_bigMod(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LBEq [l, r] = v ++ "idris_bigEq(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LBLt [l, r] = v ++ "idris_bigLt(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
 doOp v LBLe [l, r] = v ++ "idris_bigLe(vm, " ++ creg l ++ ", " ++ creg r ++ ")"
@@ -251,6 +297,144 @@ doOp v LReadStr [x] = v ++ "idris_readStr(vm, GETPTR(" ++ creg x ++ "))"
 doOp _ LPrintNum [x] = "printf(\"%ld\\n\", GETINT(" ++ creg x ++ "))"
 doOp _ LPrintStr [x] = "fputs(GETSTR(" ++ creg x ++ "), stdout)"
 
+doOp v LIntB8 [x] = v ++ "idris_b8(vm, " ++ creg x ++ ")"
+doOp v LIntB16 [x] = v ++ "idris_b16(vm, " ++ creg x ++ ")"
+doOp v LIntB32 [x] = v ++ "idris_b32(vm, " ++ creg x ++ ")"
+doOp v LIntB64 [x] = v ++ "idris_b64(vm, " ++ creg x ++ ")"
+
+doOp v LB32Int [x] = v ++ "idris_castB32Int(vm, " ++ creg x ++ ")"
+
+doOp v LB8Lt [x, y] = v ++ "idris_b8Lt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Lte [x, y] = v ++ "idris_b8Lte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Eq [x, y] = v ++ "idris_b8Eq(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Gte [x, y] = v ++ "idris_b8Gte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Gt [x, y] = v ++ "idris_b8Gt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB8Shl [x, y] = v ++ "idris_b8Shl(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8LShr [x, y] = v ++ "idris_b8Shr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8AShr [x, y] = v ++ "idris_b8AShr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8And [x, y] = v ++ "idris_b8And(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Or [x, y] = v ++ "idris_b8Or(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Xor [x, y] = v ++ "idris_b8Xor(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Compl [x] = v ++ "idris_b8Compl(vm, " ++ creg x ++ ")"
+
+doOp v LB8Plus [x, y] = v ++ "idris_b8Plus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Minus [x, y] = v ++ "idris_b8Minus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8Times [x, y] = v ++ "idris_b8Times(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8UDiv [x, y] = v ++ "idris_b8UDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8SDiv [x, y] = v ++ "idris_b8SDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8URem [x, y] = v ++ "idris_b8URem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB8SRem [x, y] = v ++ "idris_b8SRem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB8Z16 [x] = v ++ "idris_b8Z16(vm, " ++ creg x ++ ")"
+doOp v LB8Z32 [x] = v ++ "idris_b8Z32(vm, " ++ creg x ++ ")"
+doOp v LB8Z64 [x] = v ++ "idris_b8Z64(vm, " ++ creg x ++ ")"
+doOp v LB8S16 [x] = v ++ "idris_b8S16(vm, " ++ creg x ++ ")"
+doOp v LB8S32 [x] = v ++ "idris_b8S32(vm, " ++ creg x ++ ")"
+doOp v LB8S64 [x] = v ++ "idris_b8S64(vm, " ++ creg x ++ ")"
+
+doOp v LB16Lt [x, y] = v ++ "idris_b16Lt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Lte [x, y] = v ++ "idris_b16Lte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Eq [x, y] = v ++ "idris_b16Eq(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Gte [x, y] = v ++ "idris_b16Gte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Gt [x, y] = v ++ "idris_b16Gt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB16Shl [x, y] = v ++ "idris_b16Shl(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16LShr [x, y] = v ++ "idris_b16Shr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16AShr [x, y] = v ++ "idris_b16AShr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16And [x, y] = v ++ "idris_b16And(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Or [x, y] = v ++ "idris_b16Or(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Xor [x, y] = v ++ "idris_b16Xor(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Compl [x] = v ++ "idris_b16Compl(vm, " ++ creg x ++ ")"
+
+doOp v LB16Plus [x, y] =
+  v ++ "idris_b16Plus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Minus [x, y] =
+  v ++ "idris_b16Minus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16Times [x, y] =
+  v ++ "idris_b16Times(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16UDiv [x, y] =
+  v ++ "idris_b16UDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16SDiv [x, y] =
+  v ++ "idris_b16SDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16URem [x, y] =
+  v ++ "idris_b16URem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB16SRem [x, y] =
+  v ++ "idris_b16SRem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB16Z32 [x] = v ++ "idris_b16Z32(vm, " ++ creg x ++ ")"
+doOp v LB16Z64 [x] = v ++ "idris_b16Z64(vm, " ++ creg x ++ ")"
+doOp v LB16S32 [x] = v ++ "idris_b16S32(vm, " ++ creg x ++ ")"
+doOp v LB16S64 [x] = v ++ "idris_b16S64(vm, " ++ creg x ++ ")"
+doOp v LB16T8 [x] = v ++ "idris_b16T8(vm, " ++ creg x ++ ")"
+
+doOp v LB32Lt [x, y] = v ++ "idris_b32Lt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Lte [x, y] = v ++ "idris_b32Lte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Eq [x, y] = v ++ "idris_b32Eq(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Gte [x, y] = v ++ "idris_b32Gte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Gt [x, y] = v ++ "idris_b32Gt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB32Shl [x, y] = v ++ "idris_b32Shl(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32LShr [x, y] = v ++ "idris_b32Shr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32AShr [x, y] = v ++ "idris_b32AShr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32And [x, y] = v ++ "idris_b32And(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Or [x, y] = v ++ "idris_b32Or(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Xor [x, y] = v ++ "idris_b32Xor(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Compl [x] = v ++ "idris_b32Compl(vm, " ++ creg x ++ ")"
+
+doOp v LB32Plus [x, y] =
+  v ++ "idris_b32Plus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Minus [x, y] =
+  v ++ "idris_b32Minus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32Times [x, y] =
+  v ++ "idris_b32Times(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32UDiv [x, y] =
+  v ++ "idris_b32UDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32SDiv [x, y] =
+  v ++ "idris_b32SDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32URem [x, y] =
+  v ++ "idris_b32URem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB32SRem [x, y] =
+  v ++ "idris_b32SRem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB32Z64 [x] = v ++ "idris_b32Z64(vm, " ++ creg x ++ ")"
+doOp v LB32S64 [x] = v ++ "idris_b32S64(vm, " ++ creg x ++ ")"
+doOp v LB32T8 [x] = v ++ "idris_b32T8(vm, " ++ creg x ++ ")"
+doOp v LB32T16 [x] = v ++ "idris_b32T16(vm, " ++ creg x ++ ")"
+
+doOp v LB64Lt [x, y] = v ++ "idris_b64Lt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Lte [x, y] = v ++ "idris_b64Lte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Eq [x, y] = v ++ "idris_b64Eq(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Gte [x, y] = v ++ "idris_b64Gte(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Gt [x, y] = v ++ "idris_b64Gt(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB64Shl [x, y] = v ++ "idris_b64Shl(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64LShr [x, y] = v ++ "idris_b64Shr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64AShr [x, y] = v ++ "idris_b64AShr(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64And [x, y] = v ++ "idris_b64And(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Or [x, y] = v ++ "idris_b64Or(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Xor [x, y] = v ++ "idris_b64Xor(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Compl [x] = v ++ "idris_b64Compl(vm, " ++ creg x ++ ")"
+
+doOp v LB64Plus [x, y] =
+  v ++ "idris_b64Plus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Minus [x, y] =
+  v ++ "idris_b64Minus(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64Times [x, y] =
+  v ++ "idris_b64Times(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64UDiv [x, y] =
+  v ++ "idris_b64UDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64SDiv [x, y] =
+  v ++ "idris_b64SDiv(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64URem [x, y] =
+  v ++ "idris_b64URem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+doOp v LB64SRem [x, y] =
+  v ++ "idris_b64SRem(vm, " ++ creg x ++ "," ++ creg y ++ ")"
+
+doOp v LB64T8 [x] = v ++ "idris_b64T8(vm, " ++ creg x ++ ")"
+doOp v LB64T16 [x] = v ++ "idris_b64T16(vm, " ++ creg x ++ ")"
+doOp v LB64T32 [x] = v ++ "idris_b64T32(vm, " ++ creg x ++ ")"
+
 doOp v LFExp [x] = v ++ "MKFLOAT(exp(GETFLOAT(" ++ creg x ++ ")))"
 doOp v LFLog [x] = v ++ "MKFLOAT(log(GETFLOAT(" ++ creg x ++ ")))"
 doOp v LFSin [x] = v ++ "MKFLOAT(sin(GETFLOAT(" ++ creg x ++ ")))"
@@ -276,5 +460,7 @@ doOp v LStdErr [] = v ++ "MKPTR(vm, stderr)"
 doOp v LFork [x] = v ++ "MKPTR(vm, vmThread(vm, " ++ cname (MN 0 "EVAL") ++ ", " ++ creg x ++ "))"
 doOp v LPar [x] = v ++ creg x -- "MKPTR(vm, vmThread(vm, " ++ cname (MN 0 "EVAL") ++ ", " ++ creg x ++ "))"
 doOp v LVMPtr [] = v ++ "MKPTR(vm, vm)"
-doOp v LNoOp args = ""
-doOp _ _ _ = "FAIL"
+doOp v LChInt args = v ++ creg (last args)
+doOp v LIntCh args = v ++ creg (last args)
+doOp v LNoOp args = v ++ creg (last args)
+doOp _ op _ = "FAIL /* " ++ show op ++ " */"

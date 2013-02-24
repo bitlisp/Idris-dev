@@ -10,6 +10,7 @@ import Prelude.List
 import Prelude.Maybe
 import Prelude.Monad
 import Prelude.Applicative
+import Prelude.Functor
 import Prelude.Either
 import Prelude.Vect
 import Prelude.Strings
@@ -51,14 +52,13 @@ instance (Show a, Show b) => Show (a, b) where
 
 instance Show a => Show (List a) where 
     show xs = "[" ++ show' "" xs ++ "]" where 
-        show' : String -> List a -> String
         show' acc []        = acc
         show' acc [x]       = acc ++ show x
         show' acc (x :: xs) = show' (acc ++ show x ++ ", ") xs
 
 instance Show a => Show (Vect a n) where 
     show xs = "[" ++ show' xs ++ "]" where 
-        show' : Vect a m -> String
+        show' : Vect a n -> String
         show' []        = ""
         show' [x]       = show x
         show' (x :: xs) = show x ++ ", " ++ show' xs
@@ -66,6 +66,60 @@ instance Show a => Show (Vect a n) where
 instance Show a => Show (Maybe a) where 
     show Nothing = "Nothing"
     show (Just x) = "Just " ++ show x
+
+---- Functor instances
+
+instance Functor IO where
+    fmap f io = io_bind io (io_return . f)
+
+instance Functor Maybe where 
+    fmap f (Just x) = Just (f x)
+    fmap f Nothing  = Nothing
+
+instance Functor (Either e) where
+    fmap f (Left l) = Left l
+    fmap f (Right r) = Right (f r)
+
+instance Functor List where 
+    fmap = map
+
+---- Applicative instances
+
+instance Applicative IO where
+    pure = io_return
+    
+    am <$> bm = io_bind am (\f => io_bind bm (io_return . f))
+
+instance Applicative Maybe where
+    pure = Just
+
+    (Just f) <$> (Just a) = Just (f a)
+    _        <$> _        = Nothing
+
+instance Applicative (Either e) where
+    pure = Right
+
+    (Left a) <$> _          = Left a
+    (Right f) <$> (Right r) = Right (f r)
+    (Right _) <$> (Left l)  = Left l
+
+instance Applicative List where
+    pure x = [x]
+
+    fs <$> vs = concatMap (\f => map f vs) fs
+
+---- Alternative instances
+
+instance Alternative Maybe where
+    empty = Nothing
+
+    (Just x) <|> _ = Just x
+    Nothing  <|> v = v
+
+instance Alternative List where
+    empty = []
+    
+    (<|>) = (++)
 
 ---- Monad instances
 
@@ -79,38 +133,15 @@ instance Monad Maybe where
     Nothing  >>= k = Nothing
     (Just x) >>= k = k x
 
-instance MonadPlus Maybe where 
-    mzero = Nothing
+instance Monad (Either e) where
+    return = Right
 
-    mplus (Just x) _       = Just x
-    mplus Nothing (Just y) = Just y
-    mplus Nothing Nothing  = Nothing
+    (Left n) >>= _ = Left n
+    (Right r) >>= f = f r
 
 instance Monad List where 
     return x = [x]
     m >>= f = concatMap f m
-
-instance MonadPlus List where 
-    mzero = []
-    mplus = (++)
-
----- Functor instances
-
-instance Functor Maybe where 
-    fmap f (Just x) = Just (f x)
-    fmap f Nothing  = Nothing
-
-instance Functor List where 
-    fmap = map
-
----- Applicative instances
-
-instance Applicative Maybe where
-    pure = Just
-
-    (Just f) <$> (Just a) = Just (f a)
-    _        <$> _        = Nothing
-
 
 ---- some mathematical operations
 
@@ -216,6 +247,9 @@ getChar = mkForeign (FFun "getchar" [] FChar)
 abstract 
 data File = FHandle Ptr
 
+partial stdin : File
+stdin = FHandle prim__stdin
+
 do_fopen : String -> String -> IO Ptr
 do_fopen f m = mkForeign (FFun "fileOpen" [FString, FString] FPtr) f m
 
@@ -259,11 +293,19 @@ fwrite (FHandle h) s = do_fwrite h s
 
 partial
 do_feof : Ptr -> IO Int
-do_feof h = mkForeign (FFun "feof" [FPtr] FInt) h
+do_feof h = mkForeign (FFun "fileEOF" [FPtr] FInt) h
 
 feof : File -> IO Bool
 feof (FHandle h) = do eof <- do_feof h
-                      return (not (eof == 0)) 
+                      return (not (eof == 0))
+
+partial
+do_ferror : Ptr -> IO Int
+do_ferror h = mkForeign (FFun "fileError" [FPtr] FInt) h
+
+ferror : File -> IO Bool
+ferror (FHandle h) = do err <- do_ferror h
+                        return (not (err == 0))
 
 partial
 nullPtr : Ptr -> IO Bool
@@ -288,7 +330,7 @@ readFile fn = do h <- openFile fn Read
                  c <- readFile' h ""
                  closeFile h
                  return c
-  where 
+  where
     partial
     readFile' : File -> String -> IO String
     readFile' h contents = 
