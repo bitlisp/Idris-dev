@@ -331,7 +331,7 @@ compile expr = do
            case returnTy of
              FUnit -> getUnit
              _ -> boxVal result
-    SNothing -> getUndefVal
+    SNothing -> getUnit -- Could be undef, except sometimes erasure wipes out a 'return ()' which gets EVALed.
     SError msg ->
         do msgPtr <- buildGlobalStringPtr "errorMsg" msg
            putStr <- getPrim "putStr"
