@@ -50,6 +50,7 @@ Data-files:            rts/libidris_rts.a rts/idris_rts.h rts/idris_gc.h
                        js/Runtime-common.js
                        js/Runtime-node.js
                        js/Runtime-browser.js
+                       llvm/rts.bc
 Extra-source-files:    lib/Makefile  lib/*.idr lib/Prelude/*.idr 
                        lib/Network/*.idr lib/Control/*.idr
                        lib/Control/Monad/*.idr lib/Language/*.idr
@@ -96,7 +97,7 @@ Executable     idris
                Build-depends:   base>=4 && <5, parsec>=3, mtl, Cabal, 
                                 haskeline>=0.7, split, directory,
                                 containers, process, transformers, filepath, 
-                                directory, binary, bytestring, pretty, llvm-wrapper
+                                directory, binary, bytestring, pretty, llvm-st < 4
                                 
                Extensions:      MultiParamTypeClasses, FunctionalDependencies,
                                 FlexibleInstances, TemplateHaskell

@@ -1,61 +1,62 @@
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE RecordWildCards #-}
 module IRTS.CodegenLLVM (codegenLLVM) where
 
 import IRTS.Bytecode
-import IRTS.Lang
+import IRTS.Lang ( FType(..)
+                 , PrimFn(..)
+                 , LVar(..)
+                 )
 import IRTS.Simplified
 import IRTS.CodegenCommon
 import Core.TT
 import Util.System
 import Paths_idris
 
-import qualified LLVM.Wrapper.Core as L
-import qualified LLVM.Wrapper.BitWriter as L
-import qualified LLVM.Wrapper.Analysis as L
+import LLVM.ST
 
 import System.IO
 import System.Directory (removeFile)
 import System.Process (rawSystem)
 import System.Exit (ExitCode(..))
-import Foreign.Ptr
 import Control.Monad
+import Control.Monad.State
+import Data.List
+import Debug.Trace
+
+opt :: String
+opt = "-O0"
 
 codegenLLVM :: [(Name, SDecl)] ->
                String -> -- output file name
-               OutputType -> -- generate executable if True, only .o if False
+               OutputType ->
                IO ()
-codegenLLVM defs out exec
-    = L.withModule "" $ \m -> do
-        prims <- declarePrimitives m
-        decls <- mapM (toLLVMDecl prims m . snd) defs
-        mapM (\f -> L.setLinkage f L.InternalLinkage) decls
-        mapM_ (toLLVMDef prims m . snd) defs
-        buildMain m (MN 0 "runMain")
-        err <- L.verifyModule m
-        case err of
-          Nothing  -> case exec of
-                        Raw -> L.printModuleToFile m out
-                        Object -> buildObj m out
-                        Executable ->
-                            withTmpFile $ \obj -> do
-                                  buildObj m obj
-                                  rtsDir <- fmap (++ "/rts") getDataDir
-                                  exit <- rawSystem "gcc" [ obj, "-O3"
-                                                          , "-L" ++ rtsDir
-                                                          , "-lidris_rts", "-lgmp", "-lpthread", "-lm"
-                                                          , "-o", out
-                                                          ]
-                                  when (exit /= ExitSuccess) $ ierror "FAILURE: Linking"
-          Just msg -> ierror msg
+codegenLLVM defs out exec = do
+  rtsBuf <- fmap (++ "/llvm/rts.bc") getDataDir >>= createMemoryBufferWithContentsOfFile
+  ctx <- getGlobalContext
+  let mod = run ctx (codegen rtsBuf defs)
+  case verifyModule mod of
+    Just err -> ierror $ "Generated invalid module:\n" ++ show mod ++ "\n\n" ++ err
+    Nothing -> do
+      case exec of
+        Raw -> writeBC mod out
+        Object -> buildObj mod out
+        Executable ->
+            withTmpFile $ \obj -> do
+                          buildObj mod obj
+                          exit <- rawSystem "gcc" [ obj, opt
+                                                  , "-lm", "-lgc"
+                                                  , "-o", out
+                                                  ]
+                          when (exit /= ExitSuccess) $ ierror "FAILURE: Linking"
     where
-      writeBc m dest
-          = do L.writeBitcodeToFile m dest
-               exit <- rawSystem "opt" ["-std-compile-opts", "-std-link-opts", "-O3", "-o", dest, dest]
-               when (exit /= ExitSuccess) $ ierror "FAILURE: Bitcode optimization"
+      writeBC m dest
+          = do writeBitcodeToFile m dest
+               --exit <- rawSystem "opt" ["-std-compile-opts", "-std-link-opts", opt, "-o", dest, dest]
+               --when (exit /= ExitSuccess) $ ierror "FAILURE: Bitcode optimization"
       buildObj m dest
           = withTmpFile $ \bitcode -> do
-              writeBc m bitcode
-              exit <- rawSystem "llc" ["-filetype=obj", "-O3", "-o", dest, bitcode]
+              writeBC m bitcode
+              exit <- rawSystem "llc" ["--disable-fp-elim", "-O0", "-filetype=obj", opt, "-o", dest, bitcode]
               when (exit /= ExitSuccess) $ ierror "FAILURE: Object file output"
 
       withTmpFile :: (FilePath -> IO a) -> IO a
@@ -66,625 +67,583 @@ codegenLLVM defs out exec
         removeFile path
         return result
 
-buildMain :: L.Module -> Name -> IO ()
-buildMain m entryPoint
-    = L.withBuilder $ \b -> do
-        initVm <- L.addFunction m "init_vm"
-                  $ L.functionType (L.pointerType L.int8Type 0) [L.int32Type, L.int64Type] False
-        f <- L.addFunction m "main"
-             $ L.functionType L.int32Type
-                   [L.int32Type, L.pointerType (L.pointerType L.int8Type 0) 0] False
-        bb <- L.appendBasicBlock f "entry"
-        L.positionAtEnd b bb
-        vm <- L.buildCall b initVm
-              [L.constInt L.int32Type 4096000 True, L.constInt L.int64Type 2048000 True] ""
-        maybeRunMain <- L.getNamedFunction m (llname entryPoint)
-        case maybeRunMain of
-          Just runMain -> do call <- L.buildCall b runMain [vm] ""
-                             L.setInstructionCallConv call L.Fast
-          Nothing -> ierror $ "missing entry point: " ++ (show entryPoint)
-        L.buildRet b $ L.constInt L.int32Type 0 True
-        return ()
+data CGState c s = MkCGState { cgLocals :: [STValue c s]
+                             , cgDepth :: Int
+                             }
 
-data TypeID = ConTy | IntTy | FloatTy | StringTy | UnitTy | PtrTy
-            deriving (Eq, Enum, Show)
+newtype ICG c s a = MkICG { unICG :: StateT (CGState c s) (CodeGen c s) a }
 
-data Prims = Prims { allocCon :: L.Value
-                   , fprintf :: L.Value
-                   , abort :: L.Value
-                   , primReadStr :: L.Value
-                   , primStdin :: L.Value
-                   , primStdout :: L.Value
-                   , primStderr :: L.Value
-                   , primMkBigI :: L.Value
-                   , primMkBigC :: L.Value
-                   , primMkBigM :: L.Value
-                   , primCastIntStr :: L.Value
-                   , primCastStrInt :: L.Value
-                   , primCastFloatStr :: L.Value
-                   , primCastStrFloat :: L.Value
-                   , primConcat :: L.Value
-                   , primStrlt :: L.Value
-                   , primStreq :: L.Value
-                   , primStrlen :: L.Value
-                   , primStrHead :: L.Value
-                   , primStrTail :: L.Value
-                   , primStrCons :: L.Value
-                   , primStrIndex :: L.Value
-                   , primStrRev :: L.Value
-                   , primBigPlus :: L.Value
-                   , primBigMinus :: L.Value
-                   , primBigTimes :: L.Value
-                   , primBigDivide :: L.Value
-                   , primBigEq :: L.Value
-                   , primBigLt :: L.Value
-                   , primBigLe :: L.Value
-                   , primBigGt :: L.Value
-                   , primBigGe :: L.Value
-                   , primCastIntBig :: L.Value
-                   , primCastBigInt :: L.Value
-                   , primCastStrBig :: L.Value
-                   , primCastBigStr :: L.Value
-                   , primFExp :: L.Value
-                   , primFLog :: L.Value
-                   , primFSin :: L.Value
-                   , primFCos :: L.Value
-                   , primFTan :: L.Value
-                   , primFASin :: L.Value
-                   , primFACos :: L.Value
-                   , primFATan :: L.Value
-                   , primFSqrt :: L.Value
-                   , primFFloor :: L.Value
-                   , primFCeil :: L.Value
-                   , conTy :: L.Type
-                   , valTy :: L.Type
+runICG :: [STValue c s] -> ICG c s a -> CodeGen c s a
+runICG env (MkICG cg) = evalStateT cg $
+                        MkCGState { cgLocals = reverse env
+                                  , cgDepth = length env
+                                  }
+
+getUndefVal :: ICG c s (STValue c s)
+getUndefVal = getUndef =<< getValTy
+
+getValTy :: (Monad (m c s), MonadMG m) => m c s (STType c s)
+getValTy = pointerType =<< getPrimTy "ctor"
+
+getUnit :: ICG c s (STValue c s)
+getUnit = do valTy <- getValTy
+             unit <- getPrim "unit"
+             buildPointerCast "" unit valTy
+
+buildAlloc :: Bool -> STValue c s -> ICG c s (STValue c s)
+buildAlloc atomic size = do alloc <- getPrim (if atomic then "GC_malloc_atomic" else "GC_malloc")
+                            buildCall "" alloc [size]
+
+instance Functor (ICG c s) where
+    fmap f (MkICG x) = MkICG (fmap f x)
+
+instance Monad (ICG c s) where
+    (MkICG x) >>= f =
+        MkICG (x >>= unICG . f)
+    return = MkICG . return
+
+instance MonadLLVM ICG where
+    getContext = MkICG (lift getContext)
+    liftLL = MkICG . lift . liftLL
+    liftST = MkICG . lift . liftST
+
+instance MonadMG ICG where
+    liftMG = MkICG . lift . liftMG
+
+instance MonadCG ICG where
+    liftCG = MkICG . lift . liftCG
+
+withVars :: [STValue c s] -> ICG c s a -> ICG c s a
+withVars vs cg = do
+  st <- MkICG get
+  MkICG $ put st { cgLocals = reverse vs ++ cgLocals st
+                 , cgDepth = length vs + cgDepth st
+                 }
+  result <- cg
+  st' <- MkICG get
+  unless (cgDepth st' == length vs + cgDepth st) $ ierror "Variable leak"
+  MkICG $ put st' { cgLocals = drop (length vs) (cgLocals st')
+                  , cgDepth = cgDepth st
+                  }
+  return result
+
+findVar :: LVar -> ICG c s (STValue c s)
+findVar (Glob name) = do
+  global <- findGlobal (show name)
+  case global of
+    Just g -> return g
+    Nothing -> ierror $ "Undefined global: " ++ show name
+findVar (Loc level) = do
+  st <- MkICG get
+  return $ (cgLocals st) !! ((cgDepth st - 1) - level)
+
+updateVar :: LVar -> STValue c s -> ICG c s ()
+updateVar (Loc level) value = do
+  st <- MkICG get
+  MkICG . put $ st { cgLocals = replaceElt ((cgDepth st - 1) - level) value (cgLocals st) }
+updateVar v _ = ierror $ "Unexpected non-local var in update: " ++ show v
+
+replaceElt :: Int -> a -> [a] -> [a]
+replaceElt _ val [] = error "replaceElt: Ran out of list"
+replaceElt 0 val (x:xs) = val:xs
+replaceElt n val (x:xs) = x : replaceElt (n-1) val xs
+
+getEnv :: ICG c s [STValue c s]
+getEnv = fmap cgLocals $ MkICG get
+
+setEnv :: [STValue c s] -> ICG c s ()
+setEnv e = do
+  st <- MkICG get
+  MkICG . put $ st { cgLocals = e
+                   , cgDepth = length e
                    }
 
-declarePrimitives :: L.Module -> IO Prims
-declarePrimitives m
-    = do con <- L.structCreateNamed "constructor"
-         val <- L.structCreateNamed "value"
-         --                   Tag          Arity        Args
-         L.structSetBody con [L.int32Type, L.int32Type, L.arrayType (L.pointerType val 0) 0] False
-         --                   Type         Value
-         L.structSetBody val [L.int32Type, con] False
-         alloc <- L.addFunction m "allocCon"
-                  $ L.functionType (L.pointerType val 0)
-                        [L.pointerType L.int8Type 0, L.int32Type] False
-         rstr <- L.addFunction m "idris_readStr"
-                 $ L.functionType (L.pointerType val 0)
-                       [L.pointerType L.int8Type 0, L.pointerType L.int8Type 0] False
-         bigi <- L.addFunction m "MKBIGI"
-                 $ L.functionType (L.pointerType val 0) [L.int32Type] False
-         bigc <- L.addFunction m "MKBIGC"
-                 $ L.functionType (L.pointerType val 0)
-                       [L.pointerType L.int8Type 0, L.pointerType L.int8Type 0] False
-         bigm <- L.addFunction m "MKBIGM"
-                 $ L.functionType (L.pointerType val 0)
-                       [L.pointerType L.int8Type 0, L.pointerType L.int8Type 0] False
-         fpf <- L.addFunction m "fprintf"
-                $ L.functionType L.int32Type [L.pointerType L.int8Type 0, L.pointerType L.int8Type 0] True
-         abort' <- L.addFunction m "abort" $ L.functionType L.voidType [] False
-         L.addFunctionAttr abort' L.NoReturnAttribute
-         stdin'  <- L.addGlobal m (L.pointerType L.int8Type 0) "stdin"
-         stdout' <- L.addGlobal m (L.pointerType L.int8Type 0) "stdout"
-         stderr' <- L.addGlobal m (L.pointerType L.int8Type 0) "stderr"
-         mapM_ (flip L.setLinkage L.ExternalLinkage) [stdin', stdout', stderr']
-         let fpty = L.functionType L.doubleType [L.doubleType] False
-         exp <- L.addFunction m "llvm.exp.f64" fpty
-         log <- L.addFunction m "llvm.log.f64" fpty
-         sin <- L.addFunction m "llvm.sin.f64" fpty
-         cos <- L.addFunction m "llvm.cos.f64" fpty
-         sqrt <- L.addFunction m "llvm.sqrt.f64" fpty
-         floor <- L.addFunction m "llvm.floor.f64" fpty
-         ceil <- L.addFunction m "ceil" fpty
-         tan <- L.addFunction m "tan" fpty
-         asin <- L.addFunction m "asin" fpty
-         acos <- L.addFunction m "acos" fpty
-         atan <- L.addFunction m "atan" fpty
-         let bind name arity = do
-               f <- L.addFunction m ("idris_" ++ name)
-                    $ L.functionType (L.pointerType val 0)
-                          ((L.pointerType L.int8Type 0)
-                           : (replicate arity $ L.pointerType val 0)) False
-               L.addFunctionAttr f L.NoUnwindAttribute
-               return f
-         cis <- bind "castIntStr" 1
-         csi <- bind "castStrInt" 1
-         cfs <- bind "castFloatStr" 1
-         csf <- bind "castStrFloat" 1
-         cnc <- bind "concat" 2
-         slt <- bind "strlt" 2
-         seq <- bind "streq" 2
-         sln <- bind "strlen" 2
-         shd <- bind "strHead" 1
-         stl <- bind "strTail" 1
-         stc <- bind "strCons" 2
-         sti <- bind "strIndex" 2
-         str <- bind "strRev" 1
-         bip <- bind "bigPlus" 2
-         bim <- bind "bigMinus" 2
-         bit <- bind "bigTimes" 2
-         bid <- bind "bigDivide" 2
-         beq <- bind "bigEq" 2
-         blt <- bind "bigLt" 2
-         ble <- bind "bigLe" 2
-         bgt <- bind "bigGt" 2
-         bge <- bind "bigGe" 2
-         cib <- bind "castIntBig" 1
-         cbi <- bind "castBigInt" 1
-         csb <- bind "castStrBig" 1
-         cbs <- bind "castBigStr" 1
-         return $ Prims { allocCon = alloc
-                        , fprintf = fpf
-                        , abort = abort'
-                        , primReadStr = rstr
-                        , primStdin = stdin'
-                        , primStdout = stdout'
-                        , primStderr = stderr'
-                        , primMkBigI = bigi
-                        , primMkBigC = bigc
-                        , primMkBigM = bigm
-                        , primCastIntStr = cis
-                        , primCastStrInt = csi
-                        , primCastFloatStr = cfs
-                        , primCastStrFloat = csf
-                        , primConcat = cnc
-                        , primStrlt = slt
-                        , primStreq = seq
-                        , primStrlen = sln
-                        , primStrHead = shd
-                        , primStrTail = stl
-                        , primStrCons = stc
-                        , primStrIndex = sti
-                        , primStrRev = str
-                        , primBigPlus = bip
-                        , primBigMinus = bim
-                        , primBigTimes = bit
-                        , primBigDivide = bit
-                        , primBigEq = beq
-                        , primBigLt = blt
-                        , primBigLe = ble
-                        , primBigGt = bgt
-                        , primBigGe = bge
-                        , primCastIntBig = cib
-                        , primCastBigInt = cbi
-                        , primCastStrBig = csb
-                        , primCastBigStr = cbs
-                        , primFExp = exp
-                        , primFLog = log
-                        , primFSin = sin
-                        , primFCos = cos
-                        , primFTan = tan
-                        , primFASin = asin
-                        , primFACos = acos
-                        , primFATan = atan
-                        , primFSqrt = sqrt
-                        , primFFloor = floor
-                        , primFCeil = ceil
-                        , conTy = con
-                        , valTy = val
-                        }
+-- Given a set of branched environments containing potentially-updated
+-- variables, construct and bind a single environment that refers to
+-- the most up to date instance of every valuable, for use after the
+-- branches merge
+mergeEnvs :: [(STBasicBlock c s, [STValue c s])] -> ICG c s ()
+mergeEnvs [] = return ()
+mergeEnvs [(_, e)] = do
+  st <- MkICG get
+  MkICG . put $ st { cgLocals = e
+                   , cgDepth = length e
+                   }
+mergeEnvs es = do
+  let vars = transpose
+             . map (\(block, env) -> map (\x -> (x, block)) env)
+             $ es
+  env <- forM vars $ \var ->
+         case var of
+           [] -> ierror "mergeEnvs: impossible"
+           [(v, _)] -> return v
+           vs@((v, _):_)
+                  | all (== v) (map fst vs) -> return v
+                  | otherwise ->
+                      do name <- getValueName v
+                         ty <- typeOf v
+                         phi <- buildPhi name ty
+                         addIncoming phi vs
+                         return phi
+  st <- MkICG get
+  MkICG . put $ st { cgLocals = env
+                   , cgDepth = length env
+                   }
 
-idrFuncTy :: Prims -> Int -> L.Type
-idrFuncTy p n = L.functionType (L.pointerType (valTy p) 0)
-                ((L.pointerType L.int8Type 0)
-                 : (replicate n $ L.pointerType (valTy p) 0))
-                False
+codegen :: MemoryBuffer -> [(Name, SDecl)] -> LLVM c s (STModule c s)
+codegen rts defs = do
+  m <- parseBitcode rts
+  case m of
+    Left err -> ierror $ "Failed to load RTS definitions:\n" ++ err
+    Right mod -> runModuleGen mod (buildModule defs)
 
-llname :: Name -> String
-llname n = "_idris_" ++ (show n)
+buildModule :: [(Name, SDecl)] -> ModuleGen c s (STModule c s)
+buildModule defs = do
+  let defs' = map snd defs
+  buildPrimitives
+  decls <- mapM toDecl defs'
+  forM_ (zip decls defs') $ \(func, def) ->
+      defineFunction func (toDef def)
+  runMain <- findFunction (show (MN 0 "runMain"))
+  case runMain of
+    Nothing -> ierror "missing entry point"
+    Just f -> buildMain f
+  getModule
 
-toLLVMDecl :: Prims -> L.Module -> SDecl -> IO L.Value
-toLLVMDecl p m (SFun name args _ _)
-    = do f <- L.addFunction m (llname name) $ idrFuncTy p $ length args
-         L.setFunctionCallConv f L.Fast
-         ps <- L.getParams f
-         L.setValueName (head ps) "VM"
-         mapM (uncurry L.setValueName) $ zip (tail ps) (map show args)
-         return f
+buildMain :: STValue c s -> ModuleGen c s (STValue c s)
+buildMain entryPoint = do
+  i32 <- intType 32
+  argvTy <- intType 8 >>= pointerType >>= pointerType
+  fty <- functionType i32 [i32, argvTy] False
+  genFunction "main" fty $ do
+                         call <- buildCall "" entryPoint []
+                         setInstrCallConv call Fast
+                         zero <- constInt i32 0 False
+                         buildRet zero
 
 
-toLLVMDef :: Prims -> L.Module -> SDecl -> IO L.Value
-toLLVMDef prims m (SFun name args _ exp)
-    = L.withBuilder $ \b -> do
-        f <- fmap (maybe (ierror "toLLVMDef: impossible") id) $ L.getNamedFunction m (llname name)
-        bb <- L.appendBasicBlock f "entry"
-        L.positionAtEnd b bb
-        params <- L.getParams f
-        value <- toLLVMExp prims m f b (head params) (tail params) exp
-        unreachable <- L.isUnreachable value
-        unless unreachable $ void $ L.buildRet b value
-        broken <- L.verifyFunction f
-        when broken $ do
-          L.dumpValue f
-          err <- L.verifyModule m
-          case err of
-            Just msg -> ierror $ "Broken function: " ++ msg
-            Nothing -> ierror "toLLVMDef: impossible"
-        return f
+toDecl :: SDecl -> ModuleGen c s (STValue c s)
+toDecl (SFun name argNames _ e) = do
+  valTy <- getValTy
+  fty <- functionType valTy (replicate (length argNames) valTy) False
+  func <- addFunction (show name) fty
+  setLinkage func InternalLinkage
+  setFuncCallConv func Fast
+  addFuncAttrib func NoUnwindAttribute
+  params <- getFunctionParams func
+  forM_  (zip argNames params) $ \(argName, param) ->
+      setValueName param (show argName)
+  return func
 
-buildVal :: Prims -> L.Builder -> L.Value -> TypeID -> Int -> IO (L.Value, L.Value)
-buildVal prims b vm tyid arity
-    = do val <- L.buildCall b (allocCon prims) [vm, L.constInt L.int32Type (fromIntegral arity) True] ""
-         ty <- L.buildStructGEP b val 0 "typePtr"
-         L.buildStore b (L.constInt L.int32Type (fromIntegral $ fromEnum tyid) True) ty
-         con <- L.buildStructGEP b val 1 "constructorPtr"
-         return (val, con)
+toDef :: SDecl -> CodeGen c s ()
+toDef (SFun _ _ _ body) = do
+  params <- getParams
+  result <- runICG params $ compile body
+  unreachable <- isUnreachable result
+  unless unreachable $ void $ buildRet result
 
-buildPrim :: Prims -> L.Builder -> L.Value -> TypeID -> IO (L.Value, L.Value)
-buildPrim p b v t = buildVal p b v t 0
+-- TODO: Phi together env updates so branches don't screw with eachother
+compile :: SExp -> ICG c s (STValue c s)
+compile expr = do
+  i8 <- intType 8
+  i32 <- intType 32
+  i64 <- intType 64
+  valTy <- getValTy
+  zero64 <- constInt i64 0 False
+  zero32 <- constInt i32 0 False
+  one <- constInt i32 1 False
+  case expr of
+    SV v -> findVar v
+    SApp tailcall fname args ->
+        do argVals <- mapM findVar args
+           func <- liftMG $ findFunction (show fname)
+           case func of
+             Nothing -> ierror $ "Applying undefined function: " ++ show fname
+             Just f ->
+                 do call <- buildCall "" f argVals
+                    setTailCall call tailcall
+                    setInstrCallConv call Fast
+                    return call
+    SLet (Loc level) valueExpr body ->
+        do value <- compile valueExpr
+           withVars [value] $ compile body
+    SLet (Glob name) _ _ -> ierror "Unexpected global name in let"
+    SProj var index ->
+        do idx <- constInt i64 (fromIntegral index) False
+           val <- findVar var
+           ptr <- buildInBoundsGEP "" val [zero64, one, idx]
+           buildLoad (show index ++ "arg") ptr
+    SUpdate var expr ->
+        do value <- compile expr
+           updateVar var value
+           return value
+    SCon tag name args -> mkCon tag =<< mapM findVar args
+    SCase var alts ->
+        do ctor <- findVar var
+           let constAlts = filter (\a -> case a of { SConstCase _ _     -> True; _ -> False; }) alts
+               conAlts   = filter (\a -> case a of { SConCase _ _ _ _ _ -> True; _ -> False; }) alts
+               defaultAction =
+                   case find (\a -> case a of { SDefaultCase _ -> True; _ -> False; }) alts of
+                     Just (SDefaultCase expr) -> compile expr
+                     Nothing -> compile (SError "Inexhaustive case")
+               altActions =
+                   map (\a -> case a of
+                                SConstCase _ e -> compile e
+                                SConCase _ _ _ argNames e ->
+                                    do args <- forM (zip argNames [0..]) $ \(name, index) ->
+                                               do idx <- constInt i64 (fromIntegral index) False
+                                                  argPtr <- buildInBoundsGEP "" ctor [zero64, one, idx]
+                                                  buildLoad (show name) argPtr
+                                       withVars args $ compile e)
+                       (conAlts ++ constAlts)
+           case constAlts of
+             [] -> do tagPtr <- buildInBoundsGEP "" ctor [zero64, zero32]
+                      tag <- buildLoad "tag" tagPtr
+                      altTags <- forM conAlts $ \(SConCase _ tag _ _ _) ->
+                                 constInt i32 (fromIntegral tag) False
+                      buildMergingCase tag defaultAction (zip altTags altActions)
+             SConstCase c _ : _ ->
+                 do altVals <- mapM (\(SConstCase c _) -> compileConstUnboxed c) constAlts
+                    valTy <- typeOf (head altVals)
+                    boxTy <- pointerType =<< structType [i8, valTy] False
+                    box <- buildPointerCast "" ctor boxTy
+                    value <- buildLoad "value" =<< buildInBoundsGEP "" box [zero64, one]
+                    case c of
+                      Str _ -> buildChainCase (\x y -> do
+                                                 strcmp <- getPrim "strcmp"
+                                                 r <- buildCall "" strcmp [x, y]
+                                                 buildICmp "" IntEQ r zero32)
+                               value defaultAction (zip altVals altActions)
+                      _ -> buildMergingCase value defaultAction (zip altVals altActions)
+    SChkCase var alts ->
+        case alts of
+          [] -> ierror $ "Empty ChkCase: " ++ show expr
+          _ -> do isVal <- buildIsVal =<< findVar var
+                  buildIf valTy isVal (findVar var) (compile (SCase var alts))
+    SConst c -> compileConst c
+    SOp prim args ->
+        do argVals <- mapM findVar args
+           compilePrim prim argVals
+    SForeign _ returnTy fname args ->
+        do func <- liftMG $ ensureForeign fname returnTy (map fst args)
+           argVals <- mapM (\(fty, var) -> findVar var >>= unbox fty) args
+           result <- buildCall "" func argVals
+           case returnTy of
+             FUnit -> getUnit
+             _ -> boxVal result
+    SNothing -> getUndefVal
+    SError msg ->
+        do msgPtr <- buildGlobalStringPtr "errorMsg" msg
+           putStr <- getPrim "putStr"
+           call <- buildCall "" putStr [msgPtr]
+           trap <- getPrim "llvm.trap"
+           buildCall "" trap []
+           buildUnreachable
+    -- All elements are presently implemented
+    -- x -> do m <- liftMG (getModule >>= showModule)
+    --         ierror $ "Unimplemented IR element: " ++ show x ++ "\n\n"
+    --               ++ "Module so far:\n" ++ m
 
-buildCon :: Prims -> L.Builder -> L.Value -> Int -> [L.Value] -> IO L.Value
-buildCon prims b vm tag args
-    = do (val, conPtr) <- buildVal prims b vm ConTy $ length args
-         tagPtr <- L.buildStructGEP b conPtr 0 "tagPtr"
-         L.buildStore b (L.constInt L.int32Type (fromIntegral tag) True) tagPtr
-         arityPtr <- L.buildStructGEP b conPtr 1 "arityPtr"
-         L.buildStore b (L.constInt L.int32Type (fromIntegral $ length args) True) arityPtr
-         mapM (\(arg, idx) -> do
-                 place <- L.buildInBoundsGEP b conPtr
-                          [ L.constInt L.int32Type 0 True
-                          , L.constInt L.int32Type 2 True
-                          , L.constInt L.int32Type (fromIntegral idx) True
-                          ] $ "arg" ++ (show idx)
-                 L.buildStore b arg place) $ zip args [0..]
-         return val
+ftyToNative :: (Monad (m c s), MonadLLVM m) => FType -> m c s (STType c s)
+ftyToNative FInt    = intType 32
+ftyToNative FChar   = intType 32
+ftyToNative FString = intType 8 >>= pointerType
+ftyToNative FPtr    = intType 8 >>= pointerType
+ftyToNative FDouble = intType 8 >>= pointerType
+ftyToNative FUnit   = voidType
 
-buildInt :: Prims -> L.Builder -> L.Value -> IO L.Value
-buildInt prims b value
-    = do shifted <- L.buildShl b value one ""
-         tagged <- L.buildAdd b shifted one ""
-         L.buildIntToPtr b tagged (L.pointerType (valTy prims) 0) ""
-      where
-        one = L.constInt L.int32Type 1 True
+ensureForeign :: String -> FType -> [FType] -> ModuleGen c s (STValue c s)
+ensureForeign name returnTy argTys = do
+  func <- findFunction name
+  case func of
+    Just f -> return f
+    Nothing ->
+        do nativeRet <- ftyToNative returnTy
+           nativeArgs <- mapM ftyToNative argTys
+           fty <- functionType nativeRet nativeArgs False
+           addFunction name fty
 
-buildIsInt :: L.Builder -> L.Value -> IO L.Value
-buildIsInt b v
-    = do bits <- L.buildPtrToInt b v L.int32Type ""
-         result <- L.buildAnd b bits (L.constInt L.int32Type 1 True) ""
-         L.buildICmp b L.IntNE result (L.constInt L.int32Type 0 True) "isInt"
+compilePrim :: PrimFn -> [STValue c s] -> ICG c s (STValue c s)
+compilePrim x args =
+    case (x, args) of
+      (LPlus,  [x,y]) -> bin FInt buildAdd x y
+      (LMinus, [x,y]) -> bin FInt buildSub x y
+      (LTimes, [x,y]) -> bin FInt buildMul x y
+      (LAnd,   [x,y]) -> bin FInt buildAnd x y
+      (LSHL,   [x,y]) -> bin FInt buildShl x y
+      (LBPlus, [x,y]) -> bin FInt buildAdd x y -- HACK
+      (LBMinus, [x,y]) -> bin FInt buildSub x y -- HACK
+      (LEq, [x,y]) -> icmp FInt IntEQ x y
+      (LLt, [x,y]) -> icmp FInt IntSLT x y
+      (LLe, [x,y]) -> icmp FInt IntSLE x y
+      (LGt, [x,y]) -> icmp FInt IntSGT x y
+      (LGe, [x,y]) -> icmp FInt IntSGE x y
+      (LFPlus, [x,y]) -> bin FDouble buildFAdd x y
+      (LFMinus, [x,y]) -> bin FDouble buildFSub x y
+      (LFTimes, [x,y]) -> bin FDouble buildFMul x y
+      (LFDiv, [x,y]) -> bin FDouble buildFDiv x y
+      (LStrConcat, [x, y]) -> callPrim "strConcat" [(FString, x), (FString, y)]
+      (LIntStr, [x]) -> callPrim "intStr" [(FInt, x)]
+      (LStrEq, [x, y]) -> callPrim "strEq" [(FString, x), (FString, y)]
+      (LStrCons, [x, y]) -> callPrim "strCons" [(FChar, x), (FString, y)]
+      (LStrHead, [x]) -> callPrim "strHead" [(FString, x)]
+      (LStrTail, [x]) -> callPrim "strTail" [(FString, x)]
+      (LReadStr, [x]) -> callPrim "readStr" [(FPtr, x)] -- TODO: Implement readStr
+      _ -> ierror $ "Unimplemented primitive: " ++ show x ++ "("
+                   ++ (intersperse ',' $ take (length args) ['a'..]) ++ ")"
+    where
+      icmp ty pred l r = do
+        l' <- unbox ty l
+        r' <- unbox ty r
+        flag <- buildICmp "" pred l' r'
+        i32 <- intType 32
+        int <- buildZExt "" flag i32
+        boxVal int
 
-buildFloat :: Prims -> L.Builder -> L.Value -> L.Value -> IO L.Value
-buildFloat prims b vm value
-    = do (val, con) <- buildPrim prims b vm FloatTy
-         floatPtr <- L.buildPointerCast b con (L.pointerType L.doubleType 0) ""
-         L.buildStore b value floatPtr
-         return val
+      bin ty f l r = do
+        l' <- unbox ty l
+        r' <- unbox ty r
+        result <- f "" l' r'
+        boxVal result
 
-buildPtr :: Prims -> L.Builder -> L.Value -> L.Value -> IO L.Value
-buildPtr prims b vm value
-    = do (val, con) <- buildPrim prims b vm PtrTy
-         ptrPtr <- L.buildPointerCast b con (L.pointerType (L.pointerType L.int8Type 0) 0) ""
-         L.buildStore b value ptrPtr
-         return val
+compileConst :: Const -> ICG c s (STValue c s)
+compileConst c
+    | elem c [ IType, BIType, FlType, ChType, StrType
+             , B8Type, B16Type, B32Type, B64Type
+             , PtrType, VoidType, Forgot
+             ] = getUndefVal
+    | otherwise = compileConstUnboxed c >>= boxVal
 
-buildStr :: Prims -> L.Builder -> L.Value -> L.Value -> IO L.Value
-buildStr prims b vm value
-    = do (val, con) <- buildPrim prims b vm StringTy
-         strPtr <- L.buildPointerCast b con (L.pointerType (L.pointerType L.int8Type 0) 0) ""
-         L.buildStore b value strPtr
-         return val
+compileConstUnboxed :: Const -> ICG c s (STValue c s)
+compileConstUnboxed (I   i) = intConst True  32 i
+compileConstUnboxed (B8  i) = intConst False 8  i
+compileConstUnboxed (B16 i) = intConst False 16 i
+compileConstUnboxed (B32 i) = intConst False 32 i
+compileConstUnboxed (B64 i) = intConst False 64 i
+compileConstUnboxed (Str s) = buildGlobalStringPtr "strLit" s
+compileConstUnboxed (Ch  c) = intConst False 32 (fromEnum c)
+compileConstUnboxed x = ierror $ "Unimplemented constant type: " ++ show x
 
-buildUnit :: Prims -> L.Builder -> L.Value -> IO L.Value
-buildUnit p b vm = fmap fst $ buildPrim p b vm UnitTy
+intConst :: Integral a => Bool -> CUInt -> a -> ICG c s (STValue c s)
+intConst signed width value = do
+  ty <- intType width
+  constInt ty (fromIntegral value) signed
 
-buildError :: Prims -> L.Builder -> String -> IO L.Value
-buildError p b message
-    = do fmt <- L.buildGlobalStringPtr b "%s" ""
-         str <- L.buildGlobalStringPtr b message "errorMessage"
-         stderr <- L.buildLoad b (primStderr p) ""
-         L.buildCall b (fprintf p) [stderr, fmt, str] ""
-         L.buildCall b (abort p) [] ""
-         L.buildUnreachable b
+-- Utility for debugging codegen
+buildAssert :: STValue c s -> String -> ICG c s ()
+buildAssert cond msg = do
+  func <- getFunction
+  true <- appendBasicBlock "assertTrue" func
+  false <- appendBasicBlock "assertFalse" func
+  buildCondBr cond true false
+  positionAtEnd true
+  compile (SError msg)
+  positionAtEnd false
 
-buildCaseFail :: Prims -> L.Value -> IO L.BasicBlock
-buildCaseFail prims f
-    = L.withBuilder $ \b -> do
-        bb <- L.appendBasicBlock f "caseFail"
-        L.positionAtEnd b bb
-        fname <- L.getValueName f
-        buildError prims b $ "Inexhaustive case in " ++ fname
-        return bb
+-- Non-constructor values have the tag MSB set
+boxVal :: STValue c s -> ICG c s (STValue c s)
+boxVal val = do
+  valTy <- getValTy
+  str <- showValue val
+  i8 <- intType 8
+  i32 <- intType 32
+  i64 <- intType 64
+  zero64 <- constInt i64 0 False
+  zero32 <- constInt i32 0 False
+  one <- constInt i32 1 False
 
-buildAlt :: Prims -> L.Module -> L.Value -> L.Value -> [L.Value] -> L.Value -> L.BasicBlock -> L.BasicBlock ->
-            SAlt -> IO (L.BasicBlock, L.Value)
-buildAlt p m f vm s _ end entry (SDefaultCase body)
-    = L.withBuilder $ \b -> do
-        L.positionAtEnd b entry
-        result <- toLLVMExp p m f b vm s body
-        unreachable <- L.isUnreachable result
-        unless unreachable $ void $ L.buildBr b end
-        exit <- L.getInsertBlock b
-        return (exit, result)
-buildAlt p m f vm s _ end entry (SConstCase _ body)
-    = L.withBuilder $ \b -> do
-        L.positionAtEnd b entry
-        result <- toLLVMExp p m f b vm s body
-        unreachable <- L.isUnreachable result
-        unless unreachable $ void $ L.buildBr b end
-        exit <- L.getInsertBlock b
-        return (exit, result)
-buildAlt p m f vm s ctorPtr end entry (SConCase _ _ _ argNames body)
-    = L.withBuilder $ \b -> do
-        L.positionAtEnd b entry
-        args <- mapM (\(name, idx) -> do
-                        argPtr <- L.buildInBoundsGEP b ctorPtr
-                                  [ L.constInt L.int32Type 0 True
-                                  , L.constInt L.int32Type 2 True
-                                  , L.constInt L.int32Type idx True
-                                  ] ""
-                        L.buildLoad b argPtr $ show name)
-                     $ zip argNames [0..]
-        result <- toLLVMExp p m f b vm (s ++ args) body
-        unreachable <- L.isUnreachable result
-        unless unreachable $ void $ L.buildBr b end
-        exit <- L.getInsertBlock b
-        return (exit, result)
+  innerTy <- typeOf val
+  kind <- typeKind innerTy
 
-foreignToC :: FType -> L.Type
-foreignToC ty = case ty of
-                  FInt -> L.int32Type
-                  FUnit -> L.voidType
-                  FDouble -> L.doubleType
-                  FString -> L.pointerType L.int8Type 0
-                  FPtr -> L.pointerType L.int8Type 0
+  -- str <- showValue val
+  -- tystr <- showType innerTy
+  -- trace ("Boxing " ++ str ++ " : " ++ tystr ++ ", a " ++ show kind) $ return ()
+  -- case kind of
+  --   PointerTypeKind ->
+  --       do nullPtr <- constPtrNull innerTy
+  --          isNull <- buildICmp "" IntEQ val nullPtr
+  --          buildAssert p isNull "Boxed a null pointer"
+  --   _ -> return ()
 
-idrToNative :: L.Builder -> FType -> L.Value -> IO L.Value
-idrToNative b ty v
-    = case ty of
-        FInt -> do shifted <- L.buildPtrToInt b v L.int32Type ""
-                   L.buildAShr b shifted (L.constInt L.int32Type 1 True) ""
-        FAny -> return v
-        _ -> do ctorPtr <- L.buildStructGEP b v 1 ""
-                primPtr <- L.buildPointerCast b ctorPtr (L.pointerType (foreignToC ty) 0) ""
-                L.buildLoad b primPtr ""
+  const <- isConstant val
+  case kind of
+    VoidTypeKind -> getUnit
+    _ -> do boxTy <- structType [i8, innerTy] False
+            ptrTy <- pointerType boxTy
+            size <- sizeOf boxTy
+            mem <- buildAlloc (kind /= PointerTypeKind) size
+            box <- buildPointerCast "box" mem ptrTy
 
-cToIdr :: Prims -> L.Builder -> FType -> L.Value -> L.Value -> IO L.Value
-cToIdr prims b ty vm v
-    = case ty of
-        FInt  -> buildInt prims b v
-        FChar -> buildInt prims b v
-        FString -> buildStr   prims b vm v
-        FDouble -> buildFloat prims b vm v
-        FPtr    -> buildPtr   prims b vm v
-        FUnit   -> buildUnit prims b vm
-        FAny    -> return v
+            tagPtr <- buildInBoundsGEP "" box [zero64, zero32]
+            tag <- constInt i8 (2^8 - 1) False
+            buildStore tag tagPtr
 
-ensureBound :: L.Module -> String -> FType -> [FType] -> IO L.Value
-ensureBound m name rty argtys
-    = do maybef <- L.getNamedFunction m name
-         case maybef of
-           Nothing -> L.addFunction m name $ L.functionType (foreignToC rty) (map foreignToC argtys) False
-           Just f -> return f
+            valPtr <- buildInBoundsGEP "" box [zero64, one]
+            buildStore val valPtr
+  
+            buildPointerCast "" box valTy
 
-lookupVar :: L.Module -> [L.Value] -> LVar -> IO L.Value
-lookupVar m s (Loc level) = return $ s !! level
-lookupVar m s (Glob name)
-    = do maybeVal <- L.getNamedGlobal m (show name)
-         case maybeVal of
-           Nothing -> ierror $ "Undefined global: " ++ (show name)
-           Just val -> return val
+unbox :: FType -> STValue c s -> ICG c s (STValue c s)
+unbox FInt  v = intType 32 >>= unbox' v
+unbox FChar v = intType 32 >>= unbox' v
+unbox FString v = intType 8 >>= pointerType >>= unbox' v
+unbox FPtr    v = intType 8 >>= pointerType >>= unbox' v
+unbox FDouble v = intType 8 >>= pointerType >>= unbox' v
+unbox FUnit v = return v
 
-toLLVMExp :: Prims ->
-             L.Module ->  -- Current module
-             L.Value ->   -- Current function
-             L.Builder -> -- IR Cursor
-             L.Value ->   -- VM pointer
-             [L.Value] -> -- De Bruijn levels
-             SExp ->      -- Expression to process
-             IO L.Value
-toLLVMExp p m f b vm s (SV v) = lookupVar m s v
--- TODO: Verify consistency of definition of tail call w/ LLVM
-toLLVMExp p m f b vm s (SApp isTail name vars)
-    = do maybeCallee <- L.getNamedFunction m (llname name)
-         case maybeCallee of
-           Nothing -> ierror $ "Undefined function: " ++ (show name)
-           Just callee -> do
-             args <- mapM (lookupVar m s) vars
-             call <- L.buildCall b callee (vm:args) ""
-             conv <- L.getFunctionCallConv callee
-             L.setInstructionCallConv call conv
-             L.setTailCall call isTail
-             return call
-toLLVMExp p m f b vm s (SLet name value body)
-    = do v <- toLLVMExp p m f b vm s value
-         case name of
-           Glob n -> L.setValueName v (show name)
-           Loc _  -> return ()
-         toLLVMExp p m f b vm (s ++ [v]) body
-toLLVMExp p m f b vm s (SCon tag _ vars)
-    = mapM (lookupVar m s) vars >>= buildCon p b vm tag
-toLLVMExp p m f b vm s (SCase var alts')
-    = do let (alts, defaultAlt) =
-                 foldl (\accum alt ->
-                            case alt of
-                              SDefaultCase exp -> (fst accum, Just alt)
-                              _                -> (alt : fst accum, snd accum))
-                       ([], Nothing) alts'
-         let caseCount = case defaultAlt of
-                           Just _  -> length alts - 1 -- Default case is treated specially
-                           Nothing -> length alts
-         value <- lookupVar m s var
-         initialBlock <- L.getInsertBlock b
-         switchBB <- case head alts of
-                       SConCase _ _ _ _ _ ->
-                           do bb <- L.appendBasicBlock f "switch"
-                              L.positionAtEnd b bb
-                              return $ Just bb
-                       _ -> return Nothing
-         ctorPtr <- L.buildStructGEP b value 1 ""
-         altEntryBlocks <- mapM (\_ -> L.appendBasicBlock f "alt") alts
-         endBlock <- L.appendBasicBlock f "endCase"
-         builtAlts <- mapM (uncurry $ buildAlt p m f vm s ctorPtr endBlock) $ zip altEntryBlocks alts
-         (defaultEntry, defaultExit, defaultVal) <-
-             case defaultAlt of
-               Just alt -> do defaultBlock <- L.appendBasicBlock f "default"
-                              fmap (\(a, b) -> (defaultBlock, Just a, Just b))
-                                $ buildAlt p m f vm s ctorPtr endBlock defaultBlock alt
-               Nothing  -> do block <- buildCaseFail p f; return (block, Nothing, Nothing)
-         let defSwitch value = do
-               s <- L.buildSwitch b value defaultEntry (fromIntegral caseCount)
-               mapM_ (uncurry $ L.addCase s)
-                     $ map (\(alt, entry) -> case alt of
-                                      SConCase _ ctorTag _ _ _ -> do
-                                          (L.constInt L.int32Type (fromIntegral ctorTag) True, entry)
-                                      SConstCase (I i) _ ->
-                                          (L.constInt L.int32Type (fromIntegral i) True, entry)
-                                      SConstCase _ _ -> ierror "Unimplemented case on non-int primitive")
-                           $ zip alts altEntryBlocks
-               return s
-         case switchBB of
-           Just switchBB ->
-               do tagPtr <- L.buildStructGEP b ctorPtr 0 ""
-                  tag <- L.buildLoad b tagPtr "tag"
-                  defSwitch tag
-                  L.positionAtEnd b initialBlock
-                  isInt <- buildIsInt b value
-                  L.buildCondBr b isInt defaultEntry switchBB
-           Nothing -> idrToNative b FInt value >>= defSwitch
-         L.positionAtEnd b endBlock
-         phi <- L.buildPhi b (L.pointerType (valTy p) 0) "caseResult"
-         results <- foldM (\accum (exit, value) -> do
-                             unreachable <- L.isUnreachable value
-                             return $ if unreachable then accum else (value, exit):accum)
-                    [] builtAlts
-         L.addIncoming phi results
-         case (defaultExit, defaultVal) of
-           (Just exit, Just val) ->
-               do unreachable <- L.isUnreachable val
-                  unless unreachable $ L.addIncoming phi [(val, exit)]
-           _ -> return ()
-         return phi
-toLLVMExp p m f b vm s (SConst const)
-    = case const of
-        I i   -> buildInt p b $ L.constInt L.int32Type (fromIntegral i) True
-        BI i | i < (2^30) -> L.buildCall b (primMkBigI p) [L.constInt L.int32Type (fromIntegral i) True] ""
-             | otherwise  -> do str <- L.buildGlobalStringPtr b (show i) "bigIntLiteral"
-                                L.buildCall b (primMkBigC p) [vm, str] ""
-        Fl f  -> buildFloat p b vm $ L.constReal L.doubleType $ realToFrac f
-        Ch c  -> buildInt p b $ L.constInt L.int32Type (fromIntegral $ fromEnum c) True
-        Str s -> L.buildGlobalStringPtr b s "stringLiteral" >>= buildStr p b vm
-        _ -> return $ L.getUndef $ L.pointerType (valTy p) 0 -- Type values are undefined
-toLLVMExp p m f b vm s (SForeign lang ftype name args)
-    = case lang of
-        LANG_C -> do ffun <- ensureBound m name ftype $ map fst args
-                     argVals <- mapM (\(fty, v) -> do
-                                        idrVal <- lookupVar m s v
-                                        idrToNative b fty idrVal)
-                                     args
-                     L.buildCall b ffun argVals "" >>= cToIdr p b ftype vm
-toLLVMExp p m f b vm s (SOp prim vars)
-    = do args <- mapM (lookupVar m s) vars
-         let icmp op = do x <- idrToNative b FInt $ args !! 0
-                          y <- idrToNative b FInt $ args !! 1
-                          v <- L.buildICmp b op x y ""
-                          bool <- L.buildZExt b v (foreignToC FInt) ""
-                          cToIdr p b FInt vm bool
-             fcmp op = do x <- idrToNative b FDouble $ args !! 0
-                          y <- idrToNative b FDouble $ args !! 1
-                          v <- L.buildFCmp b op x y ""
-                          bool <- L.buildZExt b v (foreignToC FInt) ""
-                          cToIdr p b FInt vm bool
-             binOp ty f = do x <- idrToNative b ty $ args !! 0
-                             y <- idrToNative b ty $ args !! 1
-                             v <- f b x y ""
-                             cToIdr p b ty vm v
-             binPr prim = L.buildCall b (prim p) [vm, args !! 0, args !! 1] ""
-             unPr prim  = L.buildCall b (prim p) [vm, args !! 0] ""
-             fpPr prim  = do x <- idrToNative b FDouble $ args !! 0
-                             L.buildCall b (primFExp p) [x] ""
-         case prim of
-           LPlus  -> binOp FInt L.buildAdd
-           LMinus -> binOp FInt L.buildSub
-           LTimes -> binOp FInt L.buildMul
-           LDiv   -> binOp FInt L.buildSDiv
-           LEq -> icmp L.IntEQ
-           LLt -> icmp L.IntSLT
-           LLe -> icmp L.IntSLE
-           LGt -> icmp L.IntSGT
-           LGe -> icmp L.IntSGE
-           LFPlus  -> binOp FDouble L.buildFAdd
-           LFMinus -> binOp FDouble L.buildFSub
-           LFTimes -> binOp FDouble L.buildFMul
-           LFDiv   -> binOp FDouble L.buildFDiv
-           LFEq -> fcmp L.FPOEQ
-           LFLt -> fcmp L.FPOLT
-           LFLe -> fcmp L.FPOLE
-           LFGt -> fcmp L.FPOGT
-           LFGe -> fcmp L.FPOGE
-           LBPlus     -> binPr primBigPlus
-           LBMinus    -> binPr primBigMinus
-           LBTimes    -> binPr primBigTimes
-           LBDiv      -> binPr primBigDivide
-           LBEq       -> binPr primBigEq
-           LBLt       -> binPr primBigLt
-           LBLe       -> binPr primBigLe
-           LBGt       -> binPr primBigGt
-           LBGe       -> binPr primBigGe
-           LStrConcat -> binPr primConcat
-           LStrLt     -> binPr primStrlt
-           LStrEq     -> binPr primStreq
-           LStrLen    -> binPr primStrlen
-           LStrCons   -> binPr primStrCons
-           LStrIndex  -> binPr primStrIndex
-           LIntStr    -> unPr primCastIntStr
-           LStrInt    -> unPr primCastStrInt
-           LFloatStr  -> unPr primCastFloatStr
-           LStrFloat  -> unPr primCastStrFloat
-           LIntBig    -> unPr primCastIntBig
-           LBigInt    -> unPr primCastBigInt
-           LStrBig    -> unPr primCastStrBig
-           LBigStr    -> unPr primCastBigStr
-           LStrHead   -> unPr primStrHead
-           LStrTail   -> unPr primStrTail
-           LStrRev    -> unPr primStrRev
-           LFExp      -> fpPr primFExp
-           LFLog      -> fpPr primFLog
-           LFSin      -> fpPr primFSin
-           LFCos      -> fpPr primFCos
-           LFTan      -> fpPr primFTan
-           LFASin     -> fpPr primFASin
-           LFACos     -> fpPr primFACos
-           LFATan     -> fpPr primFATan
-           LFSqrt     -> fpPr primFSqrt
-           LFFloor    -> fpPr primFFloor
-           LFCeil     -> fpPr primFCeil
-           LPrintNum -> do fmt <- L.buildGlobalStringPtr b "%d" ""
-                           num <- idrToNative b FInt $ args !! 0
-                           stdout <- L.buildLoad b (primStdout p) ""
-                           L.buildCall b (fprintf p) [stdout, fmt, num] ""
-                           buildUnit p b vm
-           LPrintStr -> do fmt <- L.buildGlobalStringPtr b "%s" ""
-                           str <- idrToNative b FString $ args !! 0
-                           stdout <- L.buildLoad b (primStdout p) ""
-                           L.buildCall b (fprintf p) [stdout, fmt, str] ""
-                           buildUnit p b vm
-           LReadStr -> do ptrPtr <- L.buildStructGEP b (args !! 0) 1 ""
-                          ptr <- idrToNative b FPtr $ args !! 0
-                          L.buildCall b (primReadStr p) [vm, ptr] ""
-           LIntFloat ->
-               do x <- idrToNative b FInt $ args !! 0
-                  f <- L.buildSIToFP b x L.doubleType ""
-                  buildFloat p b vm f
-           LFloatInt ->
-               do x <- idrToNative b FDouble $ args !! 0
-                  f <- L.buildFPToSI b x L.int32Type ""
-                  buildFloat p b vm f
-           LNoOp -> return $ L.getUndef $ L.pointerType (valTy p) 0
-           _ -> fail $ "Unimplemented primitive operator: " ++ show prim
-toLLVMExp p m f b vm s (SError message)
-    = buildError p b message
-toLLVMExp p m f b vm s (SProj var index)
-    = do v <- lookupVar m s var
-         p <- L.buildInBoundsGEP b v
-              [ L.constInt L.int32Type 0 True
-              , L.constInt L.int32Type 1 True
-              , L.constInt L.int32Type 2 True
-              , L.constInt L.int32Type (fromIntegral index) True
-              ] ""
-         L.buildLoad b p ""
-toLLVMExp p _ _ _ _ _ SNothing = return $ L.getUndef $ L.pointerType (valTy p) 0
+unbox' v ty = do
+  i8 <- intType 8
+  i32 <- intType 32
+  i64 <- intType 64
+  zero <- constInt i64 0 False
+  one <- constInt i32 1 False
+  boxTy <- structType [i8, ty] False
+  ptrTy <- pointerType boxTy
+  box <- buildPointerCast "box" v ptrTy
+  valPtr <- buildInBoundsGEP "" box [zero, one]
+  buildLoad "" valPtr
+
+
+buildIsVal :: STValue c s -> ICG c s (STValue c s)
+buildIsVal v = do
+  i8 <- intType 8
+  ptr <- pointerType i8
+  valPtr <- buildPointerCast "" v ptr
+  valTag <- constInt i8 (2^8 - 1) False
+  byte <- buildLoad "" valPtr
+  buildICmp "" IntEQ byte valTag
+
+mkCon :: Int -> [STValue c s] -> ICG c s (STValue c s)
+mkCon tag args = do
+  valTy <- getValTy
+  base <- constPtrNull valTy
+  i64 <- intType 64
+  i32 <- intType 32
+  zero64 <- constInt i64 0 False
+  zero32 <- constInt i32 0 False
+  one <- constInt i32 1 False
+  arity <- constInt i64 (fromIntegral (length args)) False
+  offset <- constGEP base [zero64, one, arity]
+  size <- constPtrToInt offset i64
+  mem <- buildAlloc False size
+  con <- buildPointerCast "" mem valTy
+  tagPtr <- buildInBoundsGEP "" con [zero64, zero32]
+  tagVal <- constInt i32 (fromIntegral tag) False
+  buildStore tagVal tagPtr
+  argsArray <- buildInBoundsGEP "" con [zero64, one]
+  forM_ (zip [0..] args) $ \(index, val) ->
+      do n <- constInt i64 index False
+         ptr <- buildInBoundsGEP (show index ++ "arg") argsArray [zero64, n]
+         buildStore val ptr
+  return con
+
+getPrim :: (Monad (m c s), MonadMG m) => String -> m c s (STValue c s)
+getPrim name = do
+  func <- findFunction name
+  case func of
+    Just f -> return f
+    Nothing ->
+        do glob <- findGlobal name
+           case glob of
+             Just g -> return g
+             Nothing -> ierror $ "Missing primitive: " ++ name
+
+callPrim :: String -> [(FType, STValue c s)] -> ICG c s (STValue c s)
+callPrim name args = do
+  func <- liftMG $ getPrim name
+  args <- mapM (uncurry unbox) args
+  result <- buildCall "" func args
+  setInstrCallConv result Fast
+  boxVal result
+
+getPrimTy :: (Monad (m c s), MonadMG m) => String -> m c s (STType c s)
+getPrimTy name = do
+  ty <- findType name
+  case ty of
+    Just t -> return t
+    Nothing -> ierror $ "Missing primitive type: " ++ name
+
+buildPrimitives :: ModuleGen c s ()
+buildPrimitives = do
+  ctorTy <- structCreateNamed "ctor"
+  i32 <- intType 32
+  valTy <- pointerType ctorTy
+  argsTy <- arrayType valTy 0
+  structSetBody ctorTy [i32, argsTy] False -- Tag, args
+  return ()
 
 ierror :: String -> a
 ierror msg = error $ "CodegenLLVM: INTERNAL ERROR: " ++ msg
+
+-- Case that preserves local environment updates
+buildMergingCase :: STValue c s -> ICG c s (STValue c s) -> [(STValue c s, ICG c s (STValue c s))]
+                 -> ICG c s (STValue c s)
+buildMergingCase value defaultCode alts = do
+  initialEnv <- getEnv
+  func <- getFunction
+  defBlock <- appendBasicBlock "caseDefault" func
+  switch <- buildSwitch value defBlock (fromIntegral (length alts))
+  positionAtEnd defBlock
+  defResult <- defaultCode
+  defExit <- getInsertBlock
+  defEnv <- getEnv
+  results <- forM alts $ \(val, cg) ->
+             do inBlock <- appendBasicBlock "caseAlt" func
+                addCase switch val inBlock
+                positionAtEnd inBlock
+                setEnv initialEnv
+                result <- cg
+                outBlock <- getInsertBlock
+                env <- getEnv
+                return (result, outBlock, env)
+  reachable <- filterM (\(r, _, _) -> fmap not $ isUnreachable r)
+               ((defResult, defExit, defEnv):results)
+  end <- appendBasicBlock "caseExit" func
+  mapM_ (\(_, out, _) -> positionAtEnd out >> buildBr end) reachable
+  positionAtEnd end
+  case reachable of
+    [] -> buildUnreachable
+    (result, _, _):_ ->
+        do ty <- typeOf result
+           phi <- buildPhi "caseResult" ty
+           addIncoming phi (map (\(result, outBlock, _) -> (result, outBlock))
+                                reachable)
+           mergeEnvs $ map (\(_, outBlock, env) -> (outBlock, env)) reachable
+           return phi
+
+-- As above, but with conditional branches based on a comparator instead of a switch. Slower but sometimes necessary.
+buildChainCase :: (STValue c s -> STValue c s -> ICG c s (STValue c s))
+               -> STValue c s -> ICG c s (STValue c s) -> [(STValue c s, ICG c s (STValue c s))]
+               -> ICG c s (STValue c s)
+buildChainCase comparator inspect defaultCode alts = do
+  initialEnv <- getEnv
+  func <- getFunction
+  results <-
+      forM alts $ \(val, cg) -> do
+        eq <- comparator inspect val
+        inBlock <- appendBasicBlock "chainCaseAlt" func
+        elseBlock <- appendBasicBlock "chainCaseElse" func
+        buildCondBr eq inBlock elseBlock
+        positionAtEnd inBlock
+        setEnv initialEnv
+        result <- cg
+        outBlock <- getInsertBlock
+        env <- getEnv
+        positionAtEnd elseBlock
+        return (result, outBlock, env)
+  defResult <- defaultCode
+  defOut <- getInsertBlock
+  defEnv <- getEnv
+  reachable <- filterM (\(r, _, _) -> fmap not $ isUnreachable r)
+               ((defResult, defOut, defEnv):results)
+  end <- appendBasicBlock "chainCaseExit" func
+  mapM_ (\(_, out, _) -> positionAtEnd out >> buildBr end) reachable
+  positionAtEnd end
+  case reachable of
+    [] -> buildUnreachable
+    (result, _, _):_ ->
+        do ty <- typeOf result
+           phi <- buildPhi "caseResult" ty
+           addIncoming phi (map (\(result, outBlock, _) -> (result, outBlock)) reachable)
+           mergeEnvs $ map (\(_, outBlock, env) -> (outBlock, env)) reachable
+           return phi
