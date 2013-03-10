@@ -117,6 +117,14 @@ define fastcc noalias i8* @intStr(i32 %i) nounwind {
   ret i8* %1
 }
 
+declare i64 @strtol(i8*, i8**, i32)
+
+define fastcc i32 @strInt(i8* %s) nounwind {
+  %1 = tail call i64 @strtol(i8* %s, i8** null, i32 10)
+  %2 = trunc i64 %1 to i32
+  ret i32 %2
+}
+
 define fastcc i32 @strEq(i8* %l, i8* %r) nounwind {
   %1 = call i32 @strcmp(i8* %l, i8* %r) nounwind readonly
   %2 = icmp eq i32 0, %1
@@ -190,11 +198,6 @@ define i32 @isNull(i8* %ptr) nounwind readnone {
   %1 = icmp eq i8* %ptr, null
   %2 = zext i1 %1 to i32
   ret i32 %2
-}
-
-define i8* @idris_stdin() nounwind readonly {
-  %1 = load i8** @stdin, align 8
-  ret i8* %1
 }
 
 declare i32 @snprintf(i8* nocapture, i64, i8* nocapture, ...) nounwind

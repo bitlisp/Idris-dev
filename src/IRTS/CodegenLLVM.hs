@@ -440,11 +440,13 @@ compilePrim x args =
       (LFDiv, [x,y]) -> bin FDouble buildFDiv x y
       (LStrConcat, [x, y]) -> callPrim "strConcat" [(FString, x), (FString, y)]
       (LIntStr, [x]) -> callPrim "intStr" [(FInt, x)]
+      (LStrInt, [x]) -> callPrim "strInt" [(FString, x)]
       (LStrEq, [x, y]) -> callPrim "strEq" [(FString, x), (FString, y)]
       (LStrCons, [x, y]) -> callPrim "strCons" [(FChar, x), (FString, y)]
       (LStrHead, [x]) -> callPrim "strHead" [(FString, x)]
       (LStrTail, [x]) -> callPrim "strTail" [(FString, x)]
       (LReadStr, [x]) -> callPrim "readStr" [(FPtr, x)]
+      (LStdIn, []) -> boxVal =<< buildLoad "" =<< getPrim "stdin"
       _ -> ierror $ "Unimplemented primitive: " ++ show x ++ "("
                    ++ (intersperse ',' $ take (length args) ['a'..]) ++ ")"
     where
