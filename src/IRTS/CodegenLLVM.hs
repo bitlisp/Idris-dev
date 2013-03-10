@@ -216,11 +216,20 @@ buildMain entryPoint = do
   argvTy <- intType 8 >>= pointerType >>= pointerType
   fty <- functionType i32 [i32, argvTy] False
   genFunction "main" fty $ do
+                         buildGmpInit
                          call <- buildCall "" entryPoint []
                          setInstrCallConv call Fast
                          zero <- constInt i32 0 False
                          buildRet zero
 
+buildGmpInit :: CodeGen c s ()
+buildGmpInit = do
+  setMem <- getPrim "__gmp_set_memory_functions"
+  alloc <- getPrim "GC_malloc_atomic"
+  realloc <- getPrim "gmp_realloc"
+  free <- getPrim "gmp_free"
+  buildCall "" setMem [alloc, realloc, free]
+  return ()
 
 toDecl :: SDecl -> ModuleGen c s (STValue c s)
 toDecl (SFun name argNames _ e) = do
@@ -309,11 +318,18 @@ compile expr = do
                     box <- buildPointerCast "" ctor boxTy
                     value <- buildLoad "value" =<< buildInBoundsGEP "" box [zero64, one]
                     case c of
-                      Str _ -> buildChainCase (\x y -> do
-                                                 strcmp <- getPrim "strcmp"
-                                                 r <- buildCall "" strcmp [x, y]
-                                                 buildICmp "" IntEQ r zero32)
-                               value defaultAction (zip altVals altActions)
+                      Str _ -> do
+                             strcmp <- getPrim "strcmp"
+                             buildChainCase (\x y -> do
+                                               r <- buildCall "" strcmp [x, y]
+                                               buildICmp "" IntEQ r zero32)
+                                            value defaultAction (zip altVals altActions)
+                      BI _ -> do
+                             mpzcmp <- getPrim "__gmpz_cmp"
+                             buildChainCase (\x y -> do
+                                                r <- buildCall "" mpzcmp [x, y]
+                                                buildICmp "" IntEQ r zero32)
+                                            value defaultAction (zip altVals altActions)
                       _ -> buildMergingCase value defaultAction (zip altVals altActions)
     SChkCase var alts ->
         case alts of
@@ -349,8 +365,10 @@ ftyToNative FInt    = intType 32
 ftyToNative FChar   = intType 32
 ftyToNative FString = intType 8 >>= pointerType
 ftyToNative FPtr    = intType 8 >>= pointerType
-ftyToNative FDouble = intType 8 >>= pointerType
+ftyToNative FAny    = intType 8 >>= pointerType -- TODO: Verify correctness
+ftyToNative FDouble = doubleType
 ftyToNative FUnit   = voidType
+ftyToNative x       = ierror $ "Unimplemented foreign type: " ++ show x
 
 ensureForeign :: String -> FType -> [FType] -> ModuleGen c s (STValue c s)
 ensureForeign name returnTy argTys = do
@@ -371,13 +389,51 @@ compilePrim x args =
       (LTimes, [x,y]) -> bin FInt buildMul x y
       (LAnd,   [x,y]) -> bin FInt buildAnd x y
       (LSHL,   [x,y]) -> bin FInt buildShl x y
-      (LBPlus, [x,y]) -> bin FInt buildAdd x y -- HACK
-      (LBMinus, [x,y]) -> bin FInt buildSub x y -- HACK
       (LEq, [x,y]) -> icmp FInt IntEQ x y
       (LLt, [x,y]) -> icmp FInt IntSLT x y
       (LLe, [x,y]) -> icmp FInt IntSLE x y
       (LGt, [x,y]) -> icmp FInt IntSGT x y
       (LGe, [x,y]) -> icmp FInt IntSGE x y
+      (LIntCh, [x]) -> return x
+      (LChInt, [x]) -> return x
+      (LIntBig, [x]) -> do
+                     i <- unbox FInt x
+                     i' <- buildSExt "" i =<< intType 64
+                     f <- getPrim "__gmpz_init_set_si"
+                     mpz <- getPrimTy "mpz"
+                     mpz_t <- pointerType mpz
+                     size <- sizeOf mpz
+                     result <- buildAlloc False size
+                     result' <- buildPointerCast "" result mpz_t
+                     buildCall "" f [result', i']
+                     boxVal result'
+      (LBigInt, [x]) -> do
+                     mpz_t <- pointerType =<< getPrimTy "mpz"
+                     i32 <- intType 32
+                     x' <- unbox' x mpz_t
+                     f <- getPrim "__gmpz_get_si"
+                     result <- buildCall "" f [x']
+                     result' <- buildTrunc "" result i32
+                     boxVal result'
+      (LBigStr, [x]) -> do
+                     mpz_t <- pointerType =<< getPrimTy "mpz"
+                     i32 <- intType 32
+                     zero <- constInt i32 0 True
+                     nullStr <- constPtrNull =<< pointerType =<< intType 8
+                     x' <- unbox' x mpz_t
+                     f <- getPrim "__gmpz_get_str"
+                     str <- buildCall "" f [nullStr, zero, x']
+                     boxVal str
+      (LBPlus, [x,y]) -> mpzOp "__gmpz_add" x y
+      (LBMinus, [x,y]) -> mpzOp "__gmpz_sub" x y
+      (LBTimes, [x,y]) -> mpzOp "__gmpz_mul" x y
+      (LBDiv, [x,y]) -> mpzOp "__gmpz_fdiv_q" x y
+      (LBMod, [x,y]) -> mpzOp "__gmpz_fdiv_r" x y
+      (LBEq, [x,y]) -> mpzCmp IntEQ x y
+      (LBLt, [x,y]) -> mpzCmp IntSLT x y
+      (LBLe, [x,y]) -> mpzCmp IntSLE x y
+      (LBGt, [x,y]) -> mpzCmp IntSGT x y
+      (LBGe, [x,y]) -> mpzCmp IntSGE x y
       (LFPlus, [x,y]) -> bin FDouble buildFAdd x y
       (LFMinus, [x,y]) -> bin FDouble buildFSub x y
       (LFTimes, [x,y]) -> bin FDouble buildFMul x y
@@ -388,7 +444,7 @@ compilePrim x args =
       (LStrCons, [x, y]) -> callPrim "strCons" [(FChar, x), (FString, y)]
       (LStrHead, [x]) -> callPrim "strHead" [(FString, x)]
       (LStrTail, [x]) -> callPrim "strTail" [(FString, x)]
-      (LReadStr, [x]) -> callPrim "readStr" [(FPtr, x)] -- TODO: Implement readStr
+      (LReadStr, [x]) -> callPrim "readStr" [(FPtr, x)]
       _ -> ierror $ "Unimplemented primitive: " ++ show x ++ "("
                    ++ (intersperse ',' $ take (length args) ['a'..]) ++ ")"
     where
@@ -406,6 +462,37 @@ compilePrim x args =
         result <- f "" l' r'
         boxVal result
 
+      mpzOp n l r = do
+        mpz_t <- pointerType =<< getPrimTy "mpz"
+        l' <- unbox' l mpz_t
+        r' <- unbox' r mpz_t
+        result <- buildMPZ
+        f <- getPrim n
+        buildCall "" f [result, l', r']
+        boxVal result
+
+      mpzCmp pred l r = do
+        mpz <- getPrimTy "mpz"
+        mpz_t <- pointerType mpz
+        l' <- unbox' l mpz_t
+        r' <- unbox' r mpz_t
+        f <- getPrim "__gmpz_cmp"
+        ord <- buildCall "" f [l', r']
+        i32 <- intType 32
+        zero <- constInt i32 0 True
+        icmp FInt pred ord zero
+
+buildMPZ :: ICG c s (STValue c s)
+buildMPZ  = do
+  mpz <- getPrimTy "mpz"
+  mpz_t <- pointerType mpz
+  size <- sizeOf mpz
+  result <- buildAlloc False size
+  result' <- buildPointerCast "" result mpz_t
+  init <- getPrim "__gmpz_init"
+  buildCall "" init [result']
+  return result'
+
 compileConst :: Const -> ICG c s (STValue c s)
 compileConst c
     | elem c [ IType, BIType, FlType, ChType, StrType
@@ -422,6 +509,18 @@ compileConstUnboxed (B32 i) = intConst False 32 i
 compileConstUnboxed (B64 i) = intConst False 64 i
 compileConstUnboxed (Str s) = buildGlobalStringPtr "strLit" s
 compileConstUnboxed (Ch  c) = intConst False 32 (fromEnum c)
+compileConstUnboxed (BI  i) = do
+  mpz <- getPrimTy "mpz"
+  mpz_t <- pointerType mpz
+  size <- sizeOf mpz
+  result <- buildAlloc False size
+  result' <- buildPointerCast "" result mpz_t
+  init <- getPrim "__gmpz_init_set_str"
+  str <- buildGlobalStringPtr "bigIntLit" (show i)
+  i32 <- intType 32
+  base <- constInt i32 10 True
+  buildCall "" init [result', str, base]
+  return result'
 compileConstUnboxed x = ierror $ "Unimplemented constant type: " ++ show x
 
 intConst :: Integral a => Bool -> CUInt -> a -> ICG c s (STValue c s)
