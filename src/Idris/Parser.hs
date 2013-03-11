@@ -1,5 +1,5 @@
 {-# LANGUAGE PatternGuards #-}
-
+-- | Parse the full Idris language.
 module Idris.Parser where
 
 import Idris.AbsSyntax
@@ -259,6 +259,7 @@ notEndBlock = do ist <- getState
                                         when (i < lvl || ")" `isPrefixOf` inp) $ fail "End of block"
                     _             -> return ()
 
+-- | Use Parsec's internal state to construct a source code position
 pfc :: IParser FC
 pfc = do s <- getPosition
          let (dir, file) = splitFileName (sourceName s)
@@ -270,9 +271,8 @@ pImport = do reserved "import"; f <- identifier; option ';' (lchar ';')
              return (toPath f)
   where toPath n = foldl1 (</>) $ splitOn "." n
 
--- a program is a list of declarations, possibly with associated
--- documentation strings
-
+-- | A program is a list of declarations, possibly with associated
+-- documentation strings.
 parseProg :: SyntaxInfo -> FilePath -> String -> SourcePos -> 
              Idris [PDecl]
 parseProg syn fname input pos
@@ -288,8 +288,7 @@ parseProg syn fname input pos
             Right (x, i) -> do putIState i
                                return (collect x)
 
--- Collect PClauses with the same function name
-
+-- | Collect 'PClauses' with the same function name
 collect :: [PDecl] -> [PDecl]
 collect (c@(PClauses _ o _ _) : ds) 
     = clauses (cname c) [] (c : ds)
@@ -323,6 +322,7 @@ pFullExpr syn
                i <- getState
                return $ desugar syn i x
 
+-- | Parse a top-level declaration
 pDecl :: SyntaxInfo -> IParser [PDecl]
 pDecl syn = do notEndBlock
                pDeclBody where
@@ -401,12 +401,13 @@ pSyntaxRule syn
     name _ = Nothing
 
     -- Can't parse two full expressions (i.e. expressions with application) in a row
-    -- so change the first to a simple expression
+    -- so change them both to a simple expression
 
     mkSimple (Expr e : es) = SimpleExpr e : mkSimple' es
     mkSimple xs = mkSimple' xs
 
-    mkSimple' (Expr e : Expr e1 : es) = SimpleExpr e : mkSimple' (Expr e1 : es)
+    mkSimple' (Expr e : Expr e1 : es) = SimpleExpr e : SimpleExpr e1 :
+                                           mkSimple es
     mkSimple' (e : es) = e : mkSimple' es
     mkSimple' [] = []
 
@@ -672,7 +673,7 @@ pName = do i <- getState
            UN n <- iName (syntax_keywords i)
            return (UN ('@':n))
 
--- Parser for an operator in function position, i.e. enclosed by `()', with an
+-- | Parser for an operator in function position, i.e. enclosed by `()', with an
 -- optional namespace.
 pOpFront = maybeWithNS pOpFrontNoNS False []
   where pOpFrontNoNS = do lchar '('; o <- operator; lchar ')'; return o
@@ -706,6 +707,7 @@ pFnOpts opts
       <|> do lchar '%'; reserved "specialise"; 
              lchar '['; ns <- sepBy pfName (lchar ','); lchar ']'
              pFnOpts (Specialise ns : opts)
+      <|> do reserved "implicit"; pFnOpts (Implicit : opts)
       <|> return opts
 
 addAcc :: Name -> Maybe Accessibility -> IParser ()
