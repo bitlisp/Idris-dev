@@ -44,7 +44,7 @@ codegenLLVM defs out exec = do
             withTmpFile $ \obj -> do
                           buildObj mod obj
                           exit <- rawSystem "gcc" [ obj, opt
-                                                  , "-lm", "-lgc"
+                                                  , "-lm", "-lgc", "-lgmp"
                                                   , "-o", out
                                                   ]
                           when (exit /= ExitSuccess) $ ierror "FAILURE: Linking"
