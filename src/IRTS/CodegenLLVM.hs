@@ -389,6 +389,7 @@ compilePrim x args =
       (LTimes, [x,y]) -> bin FInt buildMul x y
       (LAnd,   [x,y]) -> bin FInt buildAnd x y
       (LSHL,   [x,y]) -> bin FInt buildShl x y
+      (LMod,   [x,y]) -> bin FInt buildSRem x y
       (LEq, [x,y]) -> icmp FInt IntEQ x y
       (LLt, [x,y]) -> icmp FInt IntSLT x y
       (LLe, [x,y]) -> icmp FInt IntSLE x y
