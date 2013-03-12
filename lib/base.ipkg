@@ -6,16 +6,19 @@ modules = Builtins, Prelude, IO, System,
           Prelude.Algebra, Prelude.Cast, Prelude.Nat, Prelude.Fin,
           Prelude.List, Prelude.Maybe, Prelude.Monad, Prelude.Applicative,
           Prelude.Either, Prelude.Vect, Prelude.Strings, Prelude.Chars, 
-          Prelude.Heap, Prelude.Complex, Prelude.Functor,
+          Prelude.Heap, Prelude.Complex, Prelude.Functor, 
 
           Network.Cgi,
           Debug.Trace,
 
           System.Concurrency.Raw, System.Concurrency.Process,
 
+          Decidable.Equality,
+
           Language.Reflection,
 
-          Data.Morphisms, Data.Bits, Data.Mod2,
+          Data.Morphisms, Data.Bits, Data.Mod2, Data.Z, Data.Sign,
 
           Control.Monad.Identity, Control.Monad.State, Control.Category,
-          Control.Arrow
+          Control.Arrow,
+          Control.Catchable, Control.IOExcept

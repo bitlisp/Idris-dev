@@ -4,16 +4,18 @@
 " highlighter to support idris.
 "
 " author: raichoo (raichoo@googlemail.com)
-" date: Nov 13 2012
+" date: Mar 11 2013
 
 syn match idrisModule "\<\(module\|namespace\)\>"
 syn match idrisImport "\<import\>"
-syn match idrisStructure "\<\(class\|\(co\)\?data\|instance\|where\|record\)\>"
+syn match idrisStructure "\<\(class\|\(co\)\?data\|instance\|where\|record\|dsl\)\>"
 syn match idrisVisibility "\<\(public\|abstract\|private\)\>"
-syn match idrisStatement "\<\(do\|case\|of\|let\|in\|with\|total\|partial\|dsl\|auto\|using\|parameters\|mutual\|impossible\|postulate\)\>"
+syn match idrisBlock "\<\(parameters\|mutual\|postulate\|using\)\>"
+syn match idrisAnnotation "\<\(total\|partial\|auto\|impossible\|static\|implicit\)\>"
+syn match idrisStatement "\<\(do\|case\|of\|let\|in\|with\)\>"
 syn match idrisSyntax "\(pattern \+\|term \+\)\?syntax"
 syn match idrisConditional "\<\(if\|then\|else\)\>"
-syn match idrisTactic contained "\<\(intros\?\|rewrite\|exact\|refine\|trivial\|let\|focus\|try\|compute\|solve\|attack\)\>"
+syn match idrisTactic contained "\<\(intros\?\|rewrite\|exact\|refine\|trivial\|let\|focus\|try\|compute\|solve\|attack\|reflect\)\>"
 syn match idrisNumber "\<[0-9]\+\>\|\<0[xX][0-9a-fA-F]\+\>\|\<0[oO][0-7]\+\>"
 syn match idrisFloat "\<[0-9]\+\.[0-9]\+\([eE][-+]\=[0-9]\+\)\=\>"
 syn match idrisDelimiter  "(\|)\|\[\|\]\|,\|;\|_\|{\|}"
@@ -26,7 +28,7 @@ syn match idrisLink "%\(lib\|link\|include\)"
 syn match idrisDirective "%\(access\|default\|assert_total\)"
 syn region idrisString start=+"+ skip=+\\\\\|\\"+ end=+"+
 syn region idrisBlockComment start="{-" end="-}"
-syn region idrisProofBlock start="\(default\s\+\)\?proof *{" end="}" contains=idrisTactic
+syn region idrisProofBlock start="\(default\s\+\)\?\(proof\|tactics\) *{" end="}" contains=idrisTactic
 
 syn match idrisBadLeadingWhiteSpace "^\s*\t\+"
 syn match idrisBadTrailingWhiteSpace "\s\+$"
@@ -38,6 +40,8 @@ highlight def link idrisImport Structure
 highlight def link idrisModule Structure
 highlight def link idrisStructure Structure
 highlight def link idrisStatement Statement
+highlight def link idrisBlock Statement
+highlight def link idrisAnnotation Statement
 highlight def link idrisSyntax Statement
 highlight def link idrisVisibility Statement
 highlight def link idrisConditional Conditional

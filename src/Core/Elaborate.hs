@@ -40,6 +40,15 @@ type Elab a = Elab' () a
 proof :: ElabState aux -> ProofState
 proof (ES (p, _) _ _) = p
 
+-- Insert a 'proofSearchFail' error if necessary to shortcut any further
+-- fruitless searching
+proofFail :: Elab' aux a -> Elab' aux a
+proofFail e = do s <- get
+                 case runStateT e s of
+                      OK (a, s') -> do put s'
+                                       return a
+                      Error err -> lift $ Error (ProofSearchFail err)
+
 saveState :: Elab' aux ()
 saveState = do e@(ES p s _) <- get
                put (ES p s (Just e))
@@ -55,6 +64,8 @@ erun f elab = do s <- get
                  case runStateT elab s of
                     OK (a, s')     -> do put s'
                                          return a
+                    Error (ProofSearchFail (At f e))
+                                   -> lift $ Error (ProofSearchFail (At f e))
                     Error (At f e) -> lift $ Error (At f e)
                     Error e        -> lift $ Error (At f e)
 
@@ -368,7 +379,7 @@ apply :: Raw -> [(Bool, Int)] -> Elab' aux [Name]
 apply fn imps = 
     do args <- prepare_apply fn (map fst imps)
        fill (raw_apply fn (map Var args))
-       -- *Don't* solve the arguments we're specifying by hand.
+       -- _Don't_ solve the arguments we're specifying by hand.
        -- (remove from unified list before calling end_unify)
        -- HMMM: Actually, if we get it wrong, the typechecker will complain!
        -- so do nothing
@@ -508,14 +519,17 @@ try' t1 t2 proofSearch
                case prunStateT ps t1 s of
                     OK (v, s') -> do put s'
                                      return v
-                    Error e1 -> if proofSearch || recoverableErr e1 then
+                    Error e1 -> if recoverableErr e1 then
                                    do case runStateT t2 s of
                                          OK (v, s') -> do put s'; return v
                                          Error e2 -> if score e1 >= score e2 
                                                         then lift (tfail e1) 
                                                         else lift (tfail e2)
                                    else lift (tfail e1)
-  where recoverableErr (CantUnify r _ _ _ _ _) = r
+  where recoverableErr err@(CantUnify r _ _ _ _ _) 
+             = -- traceWhen r (show err) $
+               r || proofSearch
+        recoverableErr (ProofSearchFail _) = False
         recoverableErr _ = True
 
 tryWhen :: Bool -> Elab' aux a -> Elab' aux a -> Elab' aux a
