@@ -92,7 +92,7 @@ Executable     idris
                               IRTS.CodegenC, IRTS.Defunctionalise, IRTS.Inliner,
                               IRTS.Compiler, IRTS.CodegenJava, IRTS.BCImp,
                               IRTS.CodegenJavaScript, IRTS.CodegenLLVM,
-                              IRTS.CodegenCommon, IRTS.DumpBC
+                              IRTS.CodegenCommon, IRTS.DumpBC, IRTS.EscapeAnalysis
 
                               Paths_idris
 
