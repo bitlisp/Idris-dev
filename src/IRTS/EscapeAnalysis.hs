@@ -47,6 +47,10 @@ escapes :: LVar -> EA ()
 escapes (Loc l) = modify (IS.insert l)
 escapes _ = return ()
 
+forget :: LVar -> EA ()
+forget (Loc l) = modify (IS.delete l)
+forget _ = return ()
+
 markEscapes :: SDecl -> EDecl
 markEscapes (SFun name argNames arity body) =
     runEA . local (const True) $ do
@@ -66,6 +70,7 @@ markExpEscapes (SApp tc n args) = do
 markExpEscapes (SLet var value body) = do
   body' <- markExpEscapes body
   varEscapes <- escaping var
+  forget var
   value' <- local (const varEscapes) (markExpEscapes value)
   return $ ELet var value' body'
 markExpEscapes (SUpdate var e) = fmap (EUpdate var) (markExpEscapes e)
