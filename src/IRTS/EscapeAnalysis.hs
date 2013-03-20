@@ -12,6 +12,7 @@ import Core.TT (Name, Const)
 import Data.List
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
+import Control.Applicative ((<$>), (<*>))
 import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Writer
@@ -37,6 +38,7 @@ data EExp' a -- Parameter is used for capture annotations
 data Escape = None -- Does not escape
             | Local -- Escapes into the return value
             | Global -- Escapes into global state
+              deriving (Show, Eq)
 
 type EExp = EExp' Escape
 type FExp s = EExp' (Flag s)
@@ -149,6 +151,35 @@ getFlag :: LVar -> EA s (Flag s)
 getFlag (Loc l) = do
   e <- ask
   return $ eaeVarFlags e !! l
+
+freezeDecl :: FDecl s -> ST s EDecl
+freezeDecl (EFun name args arity body) = do
+  argEscapes <- mapM (readSTRef . fst) args
+  body' <- freezeExp body
+  return $ EFun name (zip argEscapes (map snd args)) arity body'
+
+freezeExp :: FExp s -> ST s EExp
+freezeExp (ELet var val body) = ELet var <$> freezeExp val <*> freezeExp body
+freezeExp (EUpdate var e) = EUpdate var <$> freezeExp e
+freezeExp (ECon flag tag name args) = do f <- readSTRef flag; return $ ECon f tag name args
+freezeExp (ECase var alts) = ECase var <$> mapM freezeAlt alts
+freezeExp (EChkCase var alts) = EChkCase var <$> mapM freezeAlt alts
+freezeExp (EConst flag c) = EConst <$> readSTRef flag <*> return c
+freezeExp (EV v) = return $ EV v
+freezeExp (EApp tc n as) = return $ EApp tc n as
+freezeExp (EProj v i) = return $ EProj v i
+freezeExp (EForeign l r n as) = return $ EForeign l r n as
+freezeExp (EOp op as) = return $ EOp op as
+freezeExp ENothing = return ENothing
+freezeExp (EError msg) = return $ EError msg
+
+freezeAlt :: FAlt s -> ST s EAlt
+freezeAlt (EConCase i j n ns e) = EConCase i j n ns <$> freezeExp e
+freezeAlt (EConstCase c e) = EConstCase c <$> freezeExp e
+freezeAlt (EDefaultCase e) = EDefaultCase <$> freezeExp e
+
+analyzeDecl :: SDecl -> EDecl
+analyzeDecl d = runST (freezeDecl <=< markEscapes $ d)
 
 markEscapes :: SDecl -> ST s (FDecl s)
 markEscapes (SFun name argNames arity body) = do
