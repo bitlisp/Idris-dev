@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 module Util.System(tempfile,environment,getCC,
                    getLibFlags,getIdrisLibDir,getIncFlags,rmFile) where
 
@@ -8,18 +7,12 @@ import System.Directory (getTemporaryDirectory, removeFile)
 import System.FilePath ((</>), addTrailingPathSeparator, normalise)
 import System.Environment
 import System.IO
-#if MIN_VERSION_base(4,0,0)
 import Control.Exception as CE
-#endif
 
 import Paths_idris
 
-#if MIN_VERSION_base(4,0,0)
 catchIO :: IO a -> (IOError -> IO a) -> IO a
 catchIO = CE.catch
-#else
-catchIO = catch
-#endif
 
 getCC :: IO String
 getCC = do env <- environment "IDRIS_CC"
