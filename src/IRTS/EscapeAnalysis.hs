@@ -34,28 +34,34 @@ data EExp' a -- Parameter is used for capture annotations
     | EError String
   deriving Show
 
-type EExp = EExp' Bool
-type FExp s = EExp' (STRef s Bool)
+data Escape = None -- Does not escape
+            | Local -- Escapes into the return value
+            | Global -- Escapes into global state
+
+type EExp = EExp' Escape
+type FExp s = EExp' (Flag s)
 
 data EAlt' a = EConCase Int Int Name [Name] (EExp' a)
              | EConstCase Const (EExp' a)
              | EDefaultCase (EExp' a)
   deriving Show
 
-type EAlt = EAlt' Bool
-type FAlt s = EAlt' (STRef s Bool)
+type EAlt = EAlt' Escape
+type FAlt s = EAlt' (Flag s)
 
 data EDecl' a = EFun Name [(a, Name)] Int (EExp' a)
   deriving Show
 
-type EDecl = EDecl' Bool
-type FDecl s = EDecl' (STRef s Bool)
+type EDecl = EDecl' Escape
+type FDecl s = EDecl' (Flag s)
+
+type Flag s = STRef s Escape
 
 data Constraint a = ImpliesF a a
                   | ImpliesC a [Constraint a]
                     deriving (Eq, Show)
 
-data EAEnv s = EAEnv { eaeVarFlags :: [STRef s Bool]
+data EAEnv s = EAEnv { eaeVarFlags :: [Flag s]
                      , eaeFName :: Name
 
                      -- if Nothing, current value unconditionally escapes
@@ -69,13 +75,18 @@ initialEnv = EAEnv { eaeVarFlags = []
                    , eaeCurrentVar = Nothing
                    }
 
-data EAOut s = EAOut [STRef s Bool] [Constraint (STRef s Bool)]
+data EAOut s = EAOut { eaoLocalGiven :: [Flag s]
+                     , eaoPossible :: [Constraint (Flag s)]
+                     , eaoGlobalGiven :: [Flag s]
+                     , eaoGlobalPossible :: [Constraint (Flag s)]
+                     }
 
 instance Monoid (EAOut s) where
-    mempty = EAOut [] []
-    mappend (EAOut es cs) (EAOut es' cs') = EAOut (es ++ es') (cs ++ cs')
+    mempty = EAOut [] [] [] []
+    mappend (EAOut es cs gs gcs) (EAOut es' cs' gs' gcs') =
+        EAOut (es ++ es') (cs ++ cs') (gs ++ gs') (gcs ++ gcs')
 
-type EA s = ReaderT (EAEnv s) (WriterT (EAOut s) (StateT (IntMap (STRef s Bool)) (ST s)))
+type EA s = ReaderT (EAEnv s) (WriterT (EAOut s) (StateT (IntMap (Flag s)) (ST s)))
 
 liftST :: ST s a -> EA s a
 liftST = lift . lift . lift
@@ -83,14 +94,21 @@ liftST = lift . lift . lift
 runEA :: EA s a -> ST s (a, EAOut s)
 runEA ea = evalStateT (runWriterT (runReaderT ea initialEnv)) IM.empty
 
-addConstraint :: Constraint (STRef s Bool) -> EA s ()
-addConstraint c = tell (EAOut [] [c])
+addConstraint :: Constraint (Flag s) -> EA s ()
+addConstraint c = tell (EAOut [] [c] [] [])
 
-addConstraints :: [Constraint (STRef s Bool)] -> EA s ()
-addConstraints cs = tell (EAOut [] cs)
+addConstraints :: [Constraint (Flag s)] -> EA s ()
+addConstraints cs = tell (EAOut [] cs [] [])
 
-addRootEscape :: STRef s Bool -> EA s ()
-addRootEscape e = tell (EAOut [e] [])
+addRootEscape :: Flag s -> EA s ()
+addRootEscape e = tell (EAOut [e] [] [] [])
+
+addGlobalEscape :: Flag s -> EA s ()
+addGlobalEscape e = tell (EAOut [] [] [e] [])
+
+-- Constraints that are only triggered by globals
+addGlobalConstraints :: [Constraint (Flag s)] -> EA s ()
+addGlobalConstraints c = tell (EAOut [] [] [] c)
 
 addEscape :: LVar -> EA s ()
 addEscape v@(Loc l) = do f <- getFlag v; modify (IM.insert l f);
@@ -100,20 +118,20 @@ dropEscape :: LVar -> EA s ()
 dropEscape (Loc l) = modify (IM.delete l)
 dropEscape _ = return ()
 
-argFlag :: Name -> Int -> EA s (STRef s Bool)
+argFlag :: Name -> Int -> EA s (Flag s)
 argFlag func idx = do
   self <- fmap eaeFName ask
   case func == self of
     True -> getFlag (Loc idx)
-    False -> liftST (newSTRef True) -- TODO
+    False -> liftST (newSTRef Global) -- TODO
 
-getEscape :: LVar -> EA s (Maybe (STRef s Bool))
+getEscape :: LVar -> EA s (Maybe (Flag s))
 getEscape (Loc l) = gets (IM.lookup l)
 
 getCurrentVar :: EA s (Maybe LVar)
 getCurrentVar = fmap (fmap Loc . eaeCurrentVar) ask
 
-getCurrentFlag :: EA s (Maybe (STRef s Bool))
+getCurrentFlag :: EA s (Maybe (Flag s))
 getCurrentFlag = do
   v <- getCurrentVar
   case v of
@@ -122,26 +140,27 @@ getCurrentFlag = do
 
 withNewVar :: LVar -> EA s a -> EA s a
 withNewVar (Loc v) x = do
-  flag <- liftST (newSTRef False)
+  flag <- liftST (newSTRef None)
   local (\e -> e { eaeCurrentVar = Just v
                  , eaeVarFlags = eaeVarFlags e ++ [flag]
                  }) x
 
-getFlag :: LVar -> EA s (STRef s Bool)
+getFlag :: LVar -> EA s (Flag s)
 getFlag (Loc l) = do
   e <- ask
   return $ eaeVarFlags e !! l
 
 markEscapes :: SDecl -> ST s (FDecl s)
 markEscapes (SFun name argNames arity body) = do
-  ((body, argFlags), EAOut givens constraints) <-
+  ((body, argFlags), EAOut givens constraints givenGlobals globalConstraints) <-
       runEA $ do
-        argFlags <- mapM (const (liftST (newSTRef False))) argNames
+        argFlags <- mapM (const (liftST (newSTRef None))) argNames
         body' <- local (\e -> e { eaeVarFlags = argFlags, eaeFName = name } ) (constrain body)
         return (body', argFlags)
-  mapM (flip writeSTRef True) givens
-  let (escaped, _) = solve givens constraints
-  mapM (flip writeSTRef True) escaped
+  let (localEsc, _) = solve givens constraints
+      (globalEsc, _) = solve givenGlobals (globalConstraints ++ constraints)
+  mapM (flip writeSTRef Local) (givens ++ localEsc)
+  mapM (flip writeSTRef Global) (givenGlobals ++ globalEsc)
   return $ EFun name (zip argFlags argNames) arity body
 
 solve :: Eq a => [a] -> [Constraint a] -> ([a], [Constraint a])
@@ -188,7 +207,9 @@ constrain (SApp tc n args) = do
              return (ImpliesF af vf)
   cf <- getCurrentFlag
   case cf of
-    Just flag -> addConstraint (ImpliesC flag argImplications)
+    Just flag ->
+        do addGlobalConstraints argImplications
+           addConstraint (ImpliesC flag argImplications)
     Nothing -> addConstraints argImplications
   return $ EApp tc n args
 constrain (SLet var value body) = do
@@ -199,7 +220,7 @@ constrain (SLet var value body) = do
   case (varEscape, cf) of
     (Nothing, _) -> return ()
     (Just varFlag, Just flag) -> addConstraint (ImpliesF flag varFlag)
-    (Just varFlag, Nothing) -> addRootEscape varFlag
+    (Just varFlag, Nothing) -> addRootEscape varFlag -- Trivially escapes into return
   dropEscape var
   return $ ELet var value' body'
 constrain (SUpdate var e) = fmap (EUpdate var) (constrain e)
@@ -207,7 +228,11 @@ constrain (SCon tag name args) = do
   cf <- getCurrentFlag
   flag <- case cf of
             Just f -> return f
-            Nothing -> liftST (newSTRef True) -- Trivially escapes, won't participate in resolution
+            Nothing ->
+                do f <- liftST (newSTRef Local)
+                   addRootEscape f
+                   return f
+  addConstraints =<< fmap (map (ImpliesF flag)) (mapM getFlag args)
   return $ ECon flag tag name args
 constrain (SCase var alts) = fmap (ECase var) (mapM constrainAlts alts)
 constrain (SChkCase var alts) = fmap (EChkCase var) (mapM constrainAlts alts)
@@ -216,17 +241,18 @@ constrain (SConst c) = do
   cf <- getCurrentFlag
   flag <- case cf of
             Just f -> return f
-            Nothing -> liftST (newSTRef True) -- Trivially escapes, won't participate in resolution
+            Nothing -> liftST (newSTRef Local) -- Trivially escapes into return, won't participate in resolution
   return $ EConst flag c
 constrain (SForeign lang ret name args) = do -- TODO: Support capture annotations
-  mapM_ (addEscape . snd) args
+  mapM_ (addGlobalEscape <=< getFlag . snd) args
   return $ EForeign lang ret name args
 constrain (SOp op args) = do
-  when (primCaptures op) $
-       do cf <- getCurrentFlag
-          case cf of
-            Just f -> addConstraints =<< mapM ((fmap (ImpliesF f)) . getFlag) args
-            Nothing -> mapM_ (addRootEscape <=< getFlag) args
+  cf <- getCurrentFlag
+  case (primCaptures op, cf) of
+    (Global, _) -> mapM_ (addGlobalEscape <=< getFlag) args -- Trivially escapes into global state
+    (Local, Just f) -> addConstraints =<< mapM ((fmap (ImpliesF f)) . getFlag) args
+    (Local, Nothing) -> mapM_ (addRootEscape <=< getFlag) args -- Trivially escapes into return
+    (None, _) -> return ()
   return $ EOp op args
 constrain SNothing = return ENothing
 constrain (SError msg) = return $ EError msg
@@ -237,7 +263,7 @@ constrainAlts (SConstCase c e) = fmap (EConstCase c) (constrain e)
 constrainAlts (SDefaultCase e) = fmap EDefaultCase (constrain e)
 
 -- Can a given primitive's argument's memory allocation end up as (part of) its return value?
-primCaptures :: PrimFn -> Bool
-primCaptures LPar = True
-primCaptures LStrTail = True
-primCaptures _ = False
+primCaptures :: PrimFn -> Escape
+primCaptures LPar = Local
+primCaptures LStrTail = Local
+primCaptures _ = None
