@@ -162,29 +162,36 @@ freezeAlt (EConCase i j n ns e) = EConCase i j n ns <$> freezeExp e
 freezeAlt (EConstCase c e) = EConstCase c <$> freezeExp e
 freezeAlt (EDefaultCase e) = EDefaultCase <$> freezeExp e
 
-analyzeDecl :: SDecl -> EDecl
-analyzeDecl d = runST (freezeDecl <=< markEscapes $ d)
+analyzeDecls :: [SDecl] -> [EDecl]
+analyzeDecls d = runST (mapM freezeDecl <=< markEscapes $ d)
 
 -- Test decls
 identity = SFun (UN "identity") [UN "x"] 1 (SV (Loc 0))
 nestedLet = SFun (UN "nestedLet") [UN "x"] 1 (SLet (Loc 1) (SV (Loc 0)) (SV (Loc 1)))
 double = SFun (UN "double") [UN "x"] 1 (SOp LPlus [Loc 0, Loc 0])
 
-markEscapes :: SDecl -> ST s (FDecl s)
-markEscapes (SFun name argNames arity body) = do
-  ((body, argFlags, retFlag), EAOut givens constraints givenGlobals globalConstraints) <-
-      runEA $ do
-        retFlag <- liftST (newSTRef Local)
-        argFlags <- mapM (const (liftST (newSTRef None))) argNames
-        body' <- local (\e -> e { eaeVarFlags = argFlags
-                                , eaeFName = name
-                                , eaeCurrentFlag = retFlag } ) (constrain body)
-        return (body', argFlags, retFlag)
-  let (localEsc, _) = solve (retFlag:givens) constraints
+markEscapes :: [SDecl] -> ST s [FDecl s]
+markEscapes decls = do
+  results <- mapM constrainDecl decls
+  let (givens, constraints, givenGlobals, globalConstraints) =
+          foldl (\(gacc, cacc, ggacc, gcacc) (_, EAOut g c gg gc) ->
+                     (g ++ gacc, c ++ cacc, gg ++ ggacc, gc ++ gcacc)
+                ) ([], [], [], []) results
+      (localEsc, _) = solve ((map (snd . fst) results) ++ givens) constraints
       (globalEsc, _) = solve givenGlobals (globalConstraints ++ constraints)
   mapM (flip writeSTRef Local) (givens ++ localEsc)
   mapM (flip writeSTRef Global) (givenGlobals ++ globalEsc)
-  return $ EFun name (zip argFlags argNames) arity body
+  return $ map (fst . fst) results
+
+constrainDecl :: SDecl -> ST s ((FDecl s, Flag s), EAOut s)
+constrainDecl (SFun name argNames arity body) =
+    runEA $ do
+      retFlag <- liftST (newSTRef Local)
+      argFlags <- mapM (const (liftST (newSTRef None))) argNames
+      body' <- local (\e -> e { eaeVarFlags = argFlags
+                              , eaeFName = name
+                              , eaeCurrentFlag = retFlag } ) (constrain body)
+      return (EFun name (zip argFlags argNames) arity body', retFlag)
 
 solve :: Eq a => [a] -> [Constraint a] -> ([a], [Constraint a])
 solve gs cs = case runState (runWriterT (mapM_ propagate gs)) cs of
