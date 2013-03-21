@@ -10,8 +10,8 @@ import IRTS.Lang (LVar(..), FLang(..), FType(..), PrimFn(..))
 import IRTS.Simplified
 import Core.TT (Name(..), Const(..))
 import Data.List
-import Data.IntMap (IntMap)
-import qualified Data.IntMap as IM
+import Data.Map (Map)
+import qualified Data.Map as M
 import Control.Applicative ((<$>), (<*>))
 import Control.Monad.State
 import Control.Monad.Reader
@@ -65,17 +65,12 @@ data Constraint a = ImpliesF a a
 
 data EAEnv s = EAEnv { eaeVarFlags :: [Flag s]
                      , eaeFName :: Name
+                     , eaeContext :: Map Name [Flag s]
 
                      -- if Nothing, current value unconditionally escapes
                      -- if Just var, current value escapes if the given var escapes
                      , eaeCurrentFlag :: Flag s
                      }
-
-initialEnv :: EAEnv s
-initialEnv = EAEnv { eaeVarFlags = []
-                   , eaeFName = error "IRTS.EscapeAnalysis: Function name not set"
-                   , eaeCurrentFlag = error "IRTS.EscapeAnalysis: Current flag not set"
-                   }
 
 data EAOut s = EAOut { eaoLocalGiven :: [Flag s]
                      , eaoPossible :: [Constraint (Flag s)]
@@ -93,8 +88,14 @@ type EA s = ReaderT (EAEnv s) (WriterT (EAOut s) (ST s))
 liftST :: ST s a -> EA s a
 liftST = lift . lift
 
-runEA :: EA s a -> ST s (a, EAOut s)
-runEA ea = runWriterT (runReaderT ea initialEnv)
+runEA :: Map Name [Flag s] -> Name -> Flag s -> EA s a -> ST s (a, EAOut s)
+runEA ctxt fname retflag ea =
+    runWriterT (runReaderT ea (EAEnv { eaeVarFlags = case M.lookup fname ctxt of
+                                                       Just n -> n
+                                                       Nothing -> error "IRTS.EscapeAnalysis.runEA: impossible"
+                                     , eaeContext = ctxt
+                                     , eaeFName = fname
+                                     , eaeCurrentFlag = retflag } ))
 
 addConstraint :: Constraint (Flag s) -> EA s ()
 addConstraint c = tell (EAOut [] [c] [] [])
@@ -112,12 +113,15 @@ addGlobalEscape e = tell (EAOut [] [] [e] [])
 addGlobalConstraints :: [Constraint (Flag s)] -> EA s ()
 addGlobalConstraints c = tell (EAOut [] [] [] c)
 
+argFlags :: Name -> EA s [Flag s]
+argFlags n = do
+  ctxt <- fmap eaeContext ask
+  case M.lookup n ctxt of
+    Just fs -> return fs
+    Nothing -> error $ "IRTS.EscapeAnalysis: Call to undefined function " ++ show n
+
 argFlag :: Name -> Int -> EA s (Flag s)
-argFlag func idx = do
-  self <- fmap eaeFName ask
-  case func == self of
-    True -> getFlag (Loc idx)
-    False -> liftST (newSTRef Global) -- TODO
+argFlag func idx = fmap (!! idx) (argFlags func)
 
 getCurrentFlag :: EA s (Flag s)
 getCurrentFlag = fmap eaeCurrentFlag ask
@@ -167,12 +171,20 @@ analyzeDecls d = runST (mapM freezeDecl <=< markEscapes $ d)
 
 -- Test decls
 identity = SFun (UN "identity") [UN "x"] 1 (SV (Loc 0))
-nestedLet = SFun (UN "nestedLet") [UN "x"] 1 (SLet (Loc 1) (SV (Loc 0)) (SV (Loc 1)))
+simpleLet = SFun (UN "nestedLet") [UN "x"] 1 (SLet (Loc 1) (SV (Loc 0)) (SV (Loc 1)))
 double = SFun (UN "double") [UN "x"] 1 (SOp LPlus [Loc 0, Loc 0])
+mutualOne = SFun (UN "mutualOne") [UN "x"] 1 (SApp True (UN "mutualTwo") [Loc 0])
+mutualTwo = SFun (UN "mutualTwo") [UN "x"] 1 (SApp True (UN "mutualOne") [Loc 0])
+mutualEscOne = SFun (UN "mutualOne") [UN "x"] 1 (SApp True (UN "mutualEscTwo") [Loc 0])
+mutualEscTwo = SFun (UN "mutualTwo") [UN "x"] 1
+               (SCase (Loc 0) [ SDefaultCase (SApp True (UN "mutualEscOne") [Loc 0])
+                              , SConstCase (I 42) (SV (Loc 0))])
 
 markEscapes :: [SDecl] -> ST s [FDecl s]
 markEscapes decls = do
-  results <- mapM constrainDecl decls
+  ctxt <- forM decls (\(SFun name argNames arity body) ->
+                          fmap ((,) name) (replicateM arity (newSTRef None)))
+  results <- mapM (constrainDecl (M.fromList ctxt)) decls
   let (givens, constraints, givenGlobals, globalConstraints) =
           foldl (\(gacc, cacc, ggacc, gcacc) (_, EAOut g c gg gc) ->
                      (g ++ gacc, c ++ cacc, gg ++ ggacc, gc ++ gcacc)
@@ -183,15 +195,13 @@ markEscapes decls = do
   mapM (flip writeSTRef Global) (givenGlobals ++ globalEsc)
   return $ map (fst . fst) results
 
-constrainDecl :: SDecl -> ST s ((FDecl s, Flag s), EAOut s)
-constrainDecl (SFun name argNames arity body) =
-    runEA $ do
-      retFlag <- liftST (newSTRef Local)
-      argFlags <- mapM (const (liftST (newSTRef None))) argNames
-      body' <- local (\e -> e { eaeVarFlags = argFlags
-                              , eaeFName = name
-                              , eaeCurrentFlag = retFlag } ) (constrain body)
-      return (EFun name (zip argFlags argNames) arity body', retFlag)
+constrainDecl :: Map Name [Flag s] -> SDecl -> ST s ((FDecl s, Flag s), EAOut s)
+constrainDecl ctxt (SFun name args arity body) = do
+  retFlag <- newSTRef Local
+  runEA ctxt name retFlag $ do
+    body' <- constrain body
+    afs <- argFlags name
+    return (EFun name (zip afs args) arity body', retFlag)
 
 solve :: Eq a => [a] -> [Constraint a] -> ([a], [Constraint a])
 solve gs cs = case runState (runWriterT (mapM_ propagate gs)) cs of
