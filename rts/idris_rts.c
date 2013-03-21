@@ -10,30 +10,24 @@
 #include "idris_gc.h"
 #include "idris_bitstring.h"
 
+
 VM* init_vm(int stack_size, size_t heap_size, 
             int max_threads, // not implemented yet
             int argc, char* argv[]) {
-    VAL* valstack = malloc(stack_size*sizeof(VAL));
-    int* intstack = malloc(stack_size*sizeof(int));
-    double* floatstack = malloc(stack_size*sizeof(double));
 
     VM* vm = malloc(sizeof(VM));
+    STATS_INIT_STATS(vm->stats)
+    STATS_ENTER_INIT(vm->stats)
+
+    VAL* valstack = malloc(stack_size * sizeof(VAL));
+
     vm->valstack = valstack;
     vm->valstack_top = valstack;
     vm->valstack_base = valstack;
-    vm->intstack = intstack;
-    vm->intstack_ptr = intstack;
-    vm->floatstack = floatstack;
-    vm->floatstack_ptr = floatstack;
     vm->stack_max = valstack + stack_size;
-    vm->heap = malloc(heap_size);
-    vm->oldheap = NULL;
-    vm->heap_next = vm->heap;
-    vm->heap_end = vm->heap + heap_size;
-    vm->heap_size = heap_size;
-    vm->collections = 0;
-    vm->allocations = 0;
-    vm->heap_growth = heap_size;
+
+    alloc_heap(&(vm->heap), heap_size);
+
     vm->ret = NULL;
     vm->reg1 = NULL;
 
@@ -51,34 +45,32 @@ VM* init_vm(int stack_size, size_t heap_size,
     vm->max_threads = max_threads;
     vm->processes = 0;
 
-    int i;
-    // Assumption: there's enough space for this in the initial heap.
-    vm->argv = malloc(argc*sizeof(VAL));
+    vm->argv = argv;
     vm->argc = argc;
 
-    for(i = 0; i < argc; ++i) {
-        vm->argv[i] = MKSTR(vm, argv[i]);
-    }
-
+    STATS_LEAVE_INIT(vm->stats)
     return vm;
 }
 
-void terminate(VM* vm) {
+Stats terminate(VM* vm) {
+    Stats stats = vm->stats;
+    STATS_ENTER_EXIT(stats)
+
     free(vm->inbox);
     free(vm->valstack);
-    free(vm->intstack);
-    free(vm->floatstack);
-    free(vm->heap);
-    free(vm->argv);
-    if (vm->oldheap != NULL) { free(vm->oldheap); }
+    free_heap(&(vm->heap));
+
     pthread_mutex_destroy(&(vm -> inbox_lock));
     pthread_mutex_destroy(&(vm -> inbox_block));
     pthread_cond_destroy(&(vm -> inbox_waiting));
     free(vm);
+
+    STATS_LEAVE_EXIT(stats)
+    return stats;
 }
 
 void idris_requireAlloc(VM* vm, size_t size) {
-    if (!(vm -> heap_next + size < vm -> heap_end)) {
+    if (!(vm->heap.next + size < vm->heap.end)) {
         idris_gc(vm);
     }
 
@@ -106,12 +98,19 @@ void* allocate(VM* vm, size_t size, int outerlock) {
     if ((size & 7)!=0) {
 	size = 8 + ((size >> 3) << 3);
     }
-    if (vm -> heap_next + size < vm -> heap_end) {
-        vm->allocations += size + sizeof(size_t);
-        void* ptr = (void*)(vm->heap_next + sizeof(size_t));
-        *((size_t*)(vm->heap_next)) = size + sizeof(size_t);
-        vm -> heap_next += size + sizeof(size_t);
+    
+    size_t chunk_size = size + sizeof(size_t);
+
+    if (vm->heap.next + chunk_size < vm->heap.end) {
+        STATS_ALLOC(vm->stats, chunk_size)
+        void* ptr = (void*)(vm->heap.next + sizeof(size_t));
+        *((size_t*)(vm->heap.next)) = chunk_size;
+        vm->heap.next += chunk_size;
+
+        assert(vm->heap.next <= vm->heap.end);
+
         memset(ptr, 0, size);
+
         if (lock) { // not message passing
            pthread_mutex_unlock(&vm->alloc_lock); 
         }
@@ -208,7 +207,7 @@ void dumpStack(VM* vm) {
     for (root = vm->valstack; root < vm->valstack_top; ++root, ++i) {
         printf("%d: ", i);
         dumpVal(*root);
-        if (*root >= (VAL)(vm->heap) && *root < (VAL)(vm->heap_end)) { printf("OK"); }
+        if (*root >= (VAL)(vm->heap.heap) && *root < (VAL)(vm->heap.end)) { printf("OK"); }
         printf("\n");
     }
     printf("RET: ");
@@ -401,12 +400,14 @@ void* runThread(void* arg) {
     callvm->processes--;
 
     free(td);
-    terminate(vm);
+
+    Stats stats = terminate(vm);
+    //    aggregate_stats(&(td->vm->stats), &stats);
     return NULL;
 }
 
 void* vmThread(VM* callvm, func f, VAL arg) {
-    VM* vm = init_vm(callvm->stack_max - callvm->valstack, callvm->heap_size, 
+    VM* vm = init_vm(callvm->stack_max - callvm->valstack, callvm->heap.size, 
                      callvm->max_threads,
                      0, NULL);
     vm->processes=1; // since it can send and receive messages
@@ -493,12 +494,12 @@ void idris_sendMessage(VM* sender, VM* dest, VAL msg) {
     // So: we try to copy, if a collection happens, we do the copy again
     // under the assumption there's enough space this time.
 
-    int gcs = dest->collections;
+    int gcs = dest->stats.collections;
     pthread_mutex_lock(&dest->alloc_lock); 
     VAL dmsg = copyTo(dest, msg);
     pthread_mutex_unlock(&dest->alloc_lock); 
 
-    if (dest->collections>gcs) {
+    if (dest->stats.collections > gcs) {
         // a collection will have invalidated the copy
         pthread_mutex_lock(&dest->alloc_lock); 
         dmsg = copyTo(dest, msg); // try again now there's room...
@@ -576,11 +577,10 @@ int idris_numArgs(VM* vm) {
 }
 
 VAL idris_getArg(VM* vm, int i) {
-    return vm->argv[i];
+    return MKSTR(vm, vm->argv[i]);
 }
 
 void stackOverflow() {
   fprintf(stderr, "Stack overflow");
   exit(-1);
 }
-

@@ -36,7 +36,7 @@ strM x with (choose (not (x == "")))
 unpack : String -> List Char
 unpack s with (strM s)
   unpack ""             | StrNil = []
-  unpack (strCons x xs) | (StrCons _ xs) = x :: unpack xs
+  unpack (strCons x xs) | (StrCons x xs) = x :: unpack xs
 
 pack : List Char -> String
 pack [] = ""
@@ -114,4 +114,7 @@ unwords' ws = (foldr1 addSpace ws)
 
 unwords : List String -> String
 unwords = pack . unwords' . map unpack
+
+length : String -> Nat
+length = fromInteger . prim_lenString
 

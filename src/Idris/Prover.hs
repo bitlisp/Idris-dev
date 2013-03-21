@@ -20,6 +20,7 @@ import System.Console.Haskeline.History
 import Control.Monad.State
 
 import Util.Pretty
+import Debug.Trace
 
 prover :: Bool -> Name -> Idris ()
 prover lit x =
@@ -59,6 +60,11 @@ prove ctxt lit n ty
          let tree = simpleCase False True CompileTime (FC "proof" 0) [([], P Ref n ty, tm)]
          logLvl 3 (show tree)
          (ptm, pty) <- recheckC (FC "proof" 0) [] tm
+         logLvl 5 ("Proof type: " ++ show pty ++ "\n" ++ 
+                   "Expected type:" ++ show ty)
+         case converts ctxt [] ty pty of
+              OK _ -> return ()
+              Error e -> ierror (CantUnify False ty pty e [] 0)
          ptm' <- applyOpts ptm
          updateContext (addCasedef n True False True False
                                  [Right (P Ref n ty, ptm)]
@@ -154,6 +160,7 @@ ploop d prompt prf e h
                               return (False, e, True, prf)
               Right tac -> do (_, e) <- elabStep e saveState
                               (_, st) <- elabStep e (runTac True i tac)
+--                               trace (show (problems (proof st))) $ 
                               return (True, st, False, prf ++ [step]))
            (\err -> do iputStrLn (show err)
                        return (False, e, False, prf))

@@ -3,8 +3,10 @@ module Idris.Completion (replCompletion, proverCompletion) where
 
 import Core.Evaluate (ctxtAlist)
 import Core.TT
+import Core.CoreParser (opChars)
 
 import Idris.AbsSyntaxTree
+import Idris.Help
 
 import Control.Monad.State.Strict
 
@@ -13,39 +15,11 @@ import Data.Maybe
 
 import System.Console.Haskeline
 
--- TODO: add specific classes of identifiers to complete, fx metavariables
--- | A specification of the arguments that REPL commands can take
-data CmdArg = ExprArg -- ^ The command takes an expression
-            | NameArg -- ^ The command takes a name
-            | FileArg -- ^ The command takes a file
-            | ModuleArg -- ^ The command takes a module name
-            | OptionArg -- ^ The command takes an option
 
--- | Information about how to complete the various commands
-cmdArgs :: [(String, CmdArg)]
-cmdArgs = [ (":t", ExprArg)
-          , (":miss", NameArg)
-          , (":missing", NameArg)
-          , (":i", NameArg)
-          , (":info", NameArg)
-          , (":total", NameArg)
-          , (":l", FileArg)
-          , (":load", FileArg)
-          , (":m", ModuleArg) -- NOTE: Argumentless form is a different command
-          , (":p", NameArg)
-          , (":prove", NameArg)
-          , (":a", NameArg)
-          , (":addproof", NameArg)
-          , (":rmproof", NameArg)
-          , (":showproof", NameArg)
-          , (":c", FileArg)
-          , (":compile", FileArg)
-          , (":js", FileArg)
-          , (":javascript", FileArg)
-          , (":set", OptionArg)
-          , (":unset", OptionArg)
-          ]
-commands = map fst cmdArgs
+fst4 :: (a, b, c, d) -> a
+fst4 (a, b, c, d) = a
+
+commands = concatMap fst4 help
 
 -- | A specification of the arguments that tactics can take
 data TacticArg = NameTArg -- ^ Names: n1, n2, n3, ... n
@@ -80,10 +54,14 @@ nameString _            = Nothing
 
 -- FIXME: Respect module imports
 -- | Get the user-visible names from the current interpreter state.
-names :: Idris[String]
+names :: Idris [String]
 names = do i <- get
            let ctxt = tt_ctxt i
            return $ nub $ mapMaybe (nameString . fst) $ ctxtAlist ctxt
+
+metavars :: Idris [String]
+metavars = do i <- get
+              return . map (show . nsroot) $ idris_metavars i \\ primDefs
 
 
 modules :: Idris [String]
@@ -97,14 +75,19 @@ completeWith ns n = if uniqueExists
                     then [simpleCompletion n]
                     else map simpleCompletion prefixMatches
     where prefixMatches = filter (isPrefixOf n) ns
-          uniqueExists = n `elem` prefixMatches
+          uniqueExists = [n] == prefixMatches
 
 completeName :: [String] -> String -> Idris [Completion]
 completeName extra n = do ns <- names
                           return $ completeWith (extra ++ ns) n
 
 completeExpr :: [String] -> CompletionFunc Idris
-completeExpr extra = completeWord Nothing " \t" (completeName extra)
+completeExpr extra = completeWord Nothing (" \t(){}:" ++ opChars) (completeName extra)
+
+completeMetaVar :: CompletionFunc Idris
+completeMetaVar = completeWord Nothing (" \t(){}:" ++ opChars) completeM
+    where completeM m = do mvs <- metavars
+                           return $ completeWith mvs m
 
 completeOption :: CompletionFunc Idris
 completeOption = completeWord Nothing " \t" completeOpt
@@ -113,14 +96,22 @@ completeOption = completeWord Nothing " \t" completeOpt
 isWhitespace :: Char -> Bool
 isWhitespace = (flip elem) " \t\n"
 
+lookupInHelp :: String -> Maybe CmdArg
+lookupInHelp cmd = lookupInHelp' cmd help
+    where lookupInHelp' cmd ((cmds, _, _, arg):xs) | elem cmd cmds = Just arg
+                                                   | otherwise   = lookupInHelp' cmd xs
+          lookupInHelp' cmd [] = Nothing
+
 -- | Get the completion function for a particular command
 completeCmd :: String -> CompletionFunc Idris
-completeCmd cmd (prev, next) = fromMaybe completeCmdName $ fmap completeArg $ lookup cmd cmdArgs
+completeCmd cmd (prev, next) = fromMaybe completeCmdName $ fmap completeArg $ lookupInHelp cmd
     where completeArg FileArg = completeFilename (prev, next)
           completeArg NameArg = completeExpr [] (prev, next) -- FIXME only complete one name
           completeArg OptionArg = completeOption (prev, next)
           completeArg ModuleArg = noCompletion (prev, next) -- FIXME do later
           completeArg ExprArg = completeExpr [] (prev, next)
+          completeArg MetaVarArg = completeMetaVar (prev, next) -- FIXME only complete one name
+          completeArg NoArg = noCompletion (prev, next)
           completeCmdName = return $ ("", completeWith commands cmd)
 
 -- | Complete REPL commands and defined identifiers

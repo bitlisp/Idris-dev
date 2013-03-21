@@ -9,6 +9,9 @@
 #include <pthread.h>
 #include <stdint.h>
 
+#include "idris_heap.h"
+#include "idris_stats.h"
+
 // Closures
 
 typedef enum {
@@ -41,18 +44,12 @@ typedef struct Closure {
 
 typedef struct {
     VAL* valstack;
-    int* intstack;
-    double* floatstack;
     VAL* valstack_top;
     VAL* valstack_base;
-    int* intstack_ptr;
-    double* floatstack_ptr;
-    char* heap;
-    char* oldheap;
-    char* heap_next;
-    char* heap_end;
     VAL* stack_max;
-   
+    
+    Heap heap;
+
     pthread_mutex_t inbox_lock;
     pthread_mutex_t inbox_block;
     pthread_mutex_t alloc_lock;
@@ -66,14 +63,12 @@ typedef struct {
 
     int processes; // Number of child processes
     int max_threads; // maximum number of threads to run in parallel
+    
+    Stats stats;
 
     int argc;
-    VAL* argv; // command line arguments
+    char** argv; // command line arguments
 
-    size_t heap_size;
-    size_t heap_growth;
-    int allocations;
-    int collections;
     VAL ret;
     VAL reg1;
 } VM;
@@ -83,7 +78,7 @@ VM* init_vm(int stack_size, size_t heap_size,
             int max_threads, 
             int argc, char* argv[]);
 // Clean up a VM once it's no longer needed
-void terminate(VM* vm);
+Stats terminate(VM* vm);
 
 // Functions all take a pointer to their VM, and previous stack base, 
 // and return nothing.

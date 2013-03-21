@@ -57,6 +57,7 @@ build ist info pattern fn tm
                                 resolveTC 7 fn ist) ivs
          probs <- get_probs
          tm <- get_term
+         ctxt <- get_context
          case probs of
             [] -> return ()
             ((_,_,_,e):es) -> lift (Error e)
@@ -122,6 +123,15 @@ elab ist info pattern tcgen fn tm
                  trace ("Elaborating " ++ show t ++ " : " ++ show g ++ "\n\tin " ++ show tm) 
                     $ -} 
                   do t' <- insertCoerce ina t
+                     g <- goal
+                     tm <- get_term
+                     ps <- get_probs
+                     hs <- get_holes
+--                      trace ("Elaborating " ++ show t' ++ " in " ++ show g
+-- --                             ++ "\n" ++ show tm 
+--                             ++ "\nholes " ++ show hs
+--                             ++ "\nproblems " ++ show ps
+--                             ++ "\n-----------\n") $
                      elab' ina t'
 
     local f = do e <- get_env
@@ -199,18 +209,17 @@ elab ist info pattern tcgen fn tm
                   = try' (elab' ina x) (trySeq' deferr xs) True
     elab' ina (PPatvar fc n) | pattern = patvar n
     elab' (ina, guarded) (PRef fc n) | pattern && not (inparamBlock n)
-                         = do ctxt <- get_context
-                              let iscon = isConName Nothing n ctxt
-                              let defined = case lookupTy Nothing n ctxt of
-                                                [] -> False
-                                                _ -> True
-                            -- this is to stop us resolve type classes recursively
-                              -- trace (show (n, guarded)) $
-                              if (tcname n && ina) then erun fc $ patvar n
-                                else if (defined && not guarded)
-                                        then do apply (Var n) []; solve
-                                        else try (do apply (Var n) []; solve)
-                                                 (patvar n)
+        = do ctxt <- get_context
+             let defined = case lookupTy Nothing n ctxt of
+                               [] -> False
+                               _ -> True
+           -- this is to stop us resolve type classes recursively
+             -- trace (show (n, guarded)) $
+             if (tcname n && ina) then erun fc $ patvar n
+               else if (defined && not guarded)
+                       then do apply (Var n) []; solve
+                       else try (do apply (Var n) []; solve)
+                                (patvar n)
       where inparamBlock n = case lookupCtxtName Nothing n (inblock info) of
                                 [] -> False
                                 _ -> True
@@ -398,6 +407,23 @@ elab ist info pattern tcgen fn tm
         | not pattern = do mapM_ (runTac False ist) ts
         | otherwise = elab' ina Placeholder
     elab' ina (PElabError e) = fail (pshow ist e)
+    elab' ina (PRewrite fc r sc) 
+        = do attack
+             tyn <- unique_hole (MN 0 "rty")
+             claim tyn RType
+             valn <- unique_hole (MN 0 "rval")
+             claim valn (Var tyn)
+             letn <- unique_hole (MN 0 "rewrite_rule")
+             letbind letn (Var tyn) (Var valn)  
+             focus valn
+             elab' ina r
+             compute
+             g <- goal
+             rewrite (Var letn)
+             g' <- goal
+             when (g == g') $ lift $ tfail (NoRewriting g)
+             elab' ina sc
+             solve
     elab' ina@(_, a) c@(PCase fc scr opts)
         = do attack
              tyn <- unique_hole (MN 0 "scty")
@@ -417,6 +443,8 @@ elab ist info pattern tcgen fn tm
              -- fail $ "Not implemented " ++ show c ++ "\n" ++ show args
              -- elaborate case
              updateAux (newdef : )
+             -- if we haven't got the type yet, hopefully we'll get it later!
+             movelast tyn
              solve
         where mkCaseName (NS n ns) = NS (mkCaseName n) ns
               mkCaseName (UN x) = UN (x ++ "_case")
@@ -477,7 +505,6 @@ elab ist info pattern tcgen fn tm
       where elabArg n t 
                 = do hs <- get_holes
                      tm <- get_term
-                     t' <- insertCoerce ina t
                      failed' <- -- trace (show (n, t, hs, tm)) $ 
                                 -- traceWhen (not (null cs)) (show ty ++ "\n" ++ showImp True t) $
                                 case n `elem` hs of
@@ -485,7 +512,7 @@ elab ist info pattern tcgen fn tm
 --                                       if r
 --                                          then try (do focus n; elabE ina t; return failed)
 --                                                   (return ((n,(lazy, t)):failed))
-                                         do focus n; elab' ina t'; return failed
+                                         do focus n; elabE ina t; return failed
                                    False -> return failed
                      elabArgs ina failed fc r ns args
 
@@ -534,7 +561,8 @@ pruneByType (P _ n _) c as
 
     typeHead var f f' 
         = case lookupTy Nothing f' c of
-                       [ty] -> case unApply (getRetTy ty) of
+                       [ty] -> let ty' = normalise c [] ty in
+                                   case unApply (getRetTy ty') of
                                     (P _ ftyn _, _) -> ftyn == f
                                     (V _, _) -> var -- keep, variable
                                     _ -> False

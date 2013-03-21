@@ -213,6 +213,7 @@ openBlock = do lchar '{'
 closeBlock :: IParser ()
 closeBlock = do ist <- getState
                 bs <- case brace_stack ist of
+                        []  -> eof >> return []
                         Nothing : xs -> (lchar '}' >> return xs) <|> (eof >> return [])
                         Just lvl : xs -> (do i   <- indent
                                              inp <- getInput
@@ -605,6 +606,7 @@ pNoExtExpr syn =
      <|> try (pSimpleExpr syn)
      <|> pLambda syn
      <|> pLet syn
+     <|> pRewriteTerm syn
      <|> pPi syn 
      <|> pDoBlock syn
      <|> pComprehension syn
@@ -934,6 +936,14 @@ pLambda syn = do lchar '\\'
                 = PLam (MN i "lamp") Placeholder
                         (PCase fc (PRef fc (MN i "lamp"))
                                 [(x, pmList xs sc)])
+
+pRewriteTerm syn = 
+                do reserved "rewrite"
+                   fc <- pfc
+                   prf <- pExpr syn
+                   reserved "in";  sc <- pExpr syn
+                   return (PRewrite fc 
+                             (PApp fc (PRef fc (UN "sym")) [pexp prf]) sc)
 
 pLet syn = try (do reserved "let"; n <- pName; 
                    ty <- option Placeholder (do lchar ':'; pExpr' syn)

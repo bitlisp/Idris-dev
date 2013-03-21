@@ -69,13 +69,14 @@ if ($#ARGV>=0) {
 $update=0;
 $diff=0;
 $show=0;
+$usejava = 0;
 @idrOpts=();
 
 while ($opt=shift(@opts)) {
     if ($opt eq "-u") { $update = 1; }
-    if ($opt eq "-d") { $diff = 1; }
-    if ($opt eq "-s") { $show = 1; }
-    if ($opt eq "-l") { push(@idrOpts, "--llvm"); }
+    elsif ($opt eq "-d") { $diff = 1; }
+    elsif ($opt eq "-s") { $show = 1; }
+    else { push(@idrOpts, $opt); }
 }
 
 foreach $test (@tests) {
@@ -98,6 +99,6 @@ foreach $test (@tests) {
 	}
 	chdir("..");
     }
-    
+
 }
 exit $exitstatus;

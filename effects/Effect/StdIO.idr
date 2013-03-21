@@ -19,9 +19,6 @@ instance Handler StdIO (IOExcept a) where
 
 data IOStream a = MkStream (List String -> (a, List String))
   
-injStream : a -> IOStream a
-injStream v = MkStream (\x => (v, []))
-  
 instance Handler StdIO IOStream where
     handle () (PutStr s) k
        = MkStream (\x => case k () () of
@@ -38,7 +35,7 @@ instance Handler StdIO IOStream where
 
 --- The Effect and associated functions
 
-STDIO : EFF
+STDIO : EFFECT
 STDIO = MkEff () StdIO
 
 putStr : Handler StdIO e => String -> Eff e [STDIO] ()
@@ -50,9 +47,14 @@ putStrLn s = putStr (s ++ "\n")
 getStr : Handler StdIO e => Eff e [STDIO] String
 getStr = GetStr
 
-mkStrFn : Eff IOStream xs a -> Env IOStream xs -> 
+mkStrFn : Env IOStream xs -> 
+          Eff IOStream xs a -> 
           List String -> (a, List String)
-mkStrFn {a} p env input = case mkStrFn' of
+mkStrFn {a} env p input = case mkStrFn' of
                                MkStream f => f input
-  where mkStrFn' : IOStream a
+  where injStream : a -> IOStream a
+        injStream v = MkStream (\x => (v, []))
+        mkStrFn' : IOStream a
         mkStrFn' = runWith injStream env p
+
+  
