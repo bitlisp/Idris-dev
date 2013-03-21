@@ -14,6 +14,7 @@ declare double    @llvm.floor.f64(double %Val)
 declare double    @llvm.ceil.f64(double %Val)
 declare double    @llvm.trunc.f64(double %Val)
 
+declare {}* @llvm.invariant.start(i64, i8* nocapture)
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i32, i1)
 declare void @llvm.trap() noreturn nounwind
 declare i32 @printf(i8* nocapture, ...) nounwind

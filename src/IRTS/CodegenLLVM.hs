@@ -639,6 +639,11 @@ mkCon tag args = do
       do n <- constInt i64 index False
          ptr <- buildInBoundsGEP (show index ++ "arg") argsArray [zero64, n]
          buildStore val ptr
+  pi8 <- pointerType =<< intType 8
+  mem' <- buildPointerCast "" mem pi8
+  neg1 <- constInt i64 (-1) True -- TODO: Replace with constant from LLVMABISizeOfType
+  ivs <- getPrim "llvm.invariant.start"
+  buildCall "" ivs [neg1, mem']
   return con
 
 getPrim :: (Monad (m c s), MonadMG m) => String -> m c s (STValue c s)
