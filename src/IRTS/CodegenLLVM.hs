@@ -351,7 +351,7 @@ compile expr = do
              _ -> boxVal result
     SNothing -> getUnit -- Could be undef, except sometimes erasure wipes out a 'return ()' which gets EVALed.
     SError msg ->
-        do msgPtr <- buildGlobalStringPtr "errorMsg" msg
+        do msgPtr <- buildGlobalStringPtr "errorMsg" (msg ++ "\n")
            putStr <- getPrim "putStr"
            call <- buildCall "" putStr [msgPtr]
            trap <- getPrim "llvm.trap"
