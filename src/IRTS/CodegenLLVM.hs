@@ -24,7 +24,7 @@ import Data.List
 import Debug.Trace
 
 opt :: String
-opt = "-O0"
+opt = "-O3"
 
 codegenLLVM :: [(Name, SDecl)] ->
                String -> -- output file name
@@ -51,12 +51,12 @@ codegenLLVM defs out exec = do
     where
       writeBC m dest
           = do writeBitcodeToFile m dest
-               --exit <- rawSystem "opt" ["-std-compile-opts", "-std-link-opts", opt, "-o", dest, dest]
-               --when (exit /= ExitSuccess) $ ierror "FAILURE: Bitcode optimization"
+               exit <- rawSystem "opt" ["-std-compile-opts", "-std-link-opts", opt, "-o", dest, dest]
+               when (exit /= ExitSuccess) $ ierror "FAILURE: Bitcode optimization"
       buildObj m dest
           = withTmpFile $ \bitcode -> do
               writeBC m bitcode
-              exit <- rawSystem "llc" ["--disable-fp-elim", "-O0", "-filetype=obj", opt, "-o", dest, bitcode]
+              exit <- rawSystem "llc" ["--disable-fp-elim", "-filetype=obj", opt, "-o", dest, bitcode]
               when (exit /= ExitSuccess) $ ierror "FAILURE: Object file output"
 
       withTmpFile :: (FilePath -> IO a) -> IO a
