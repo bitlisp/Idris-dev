@@ -74,7 +74,7 @@ compile target f tm
                       ViaJava -> codegenJava [] c f hdrs libs outty
                       ViaJavaScript -> codegenJavaScript JavaScript c f outty
                       ViaNode -> codegenJavaScript Node c f outty
-                      ViaLLVM -> codegenLLVM c f outty
+                      ViaLLVM -> codegenLLVM c f outty 3
                       Bytecode -> dumpBC c f
             Error e -> fail $ show e 
   where checkMVs = do i <- getIState

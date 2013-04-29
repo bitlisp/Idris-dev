@@ -26,41 +26,35 @@ import Control.Monad.State
 import Data.List
 import Debug.Trace
 
-opt :: String
-opt = "-O3"
-
 -- TODO: Perform optimization and assembly writing internally
 codegenLLVM :: [(Name, SDecl)] ->
                String -> -- output file name
                OutputType ->
+               Int -> -- Optimization level
                IO ()
-codegenLLVM defs out exec = do
+codegenLLVM defs out exec optLevel = do
   rtsBuf <- fmap (</> "llvm" </> "rts-" ++ arch ++ ".bc") getDataDir >>= createMemoryBufferWithContentsOfFile
   ctx <- getGlobalContext
-  let mod = run ctx (codegen rtsBuf defs)
+  let mod = run ctx (codegen rtsBuf defs optLevel)
   case verifyModule mod of
     Just err -> ierror $ "Generated invalid module:\n" ++ show mod ++ "\n\n" ++ err
     Nothing ->
       case exec of
-        Raw -> writeBC mod out
+        Raw -> writeBitcodeToFile mod out
         Object -> buildObj mod out
         Executable ->
             withTmpFile $ \obj -> do
                           buildObj mod obj
-                          exit <- rawSystem "gcc" [ obj, opt
+                          exit <- rawSystem "gcc" [ obj
                                                   , "-lm", "-lgc", "-lgmp"
                                                   , "-o", out
                                                   ]
                           when (exit /= ExitSuccess) $ ierror "FAILURE: Linking"
     where
-      writeBC m dest
-          = do writeBitcodeToFile m dest
-               exit <- rawSystem "opt" ["-std-compile-opts", "-std-link-opts", opt, "-o", dest, dest]
-               when (exit /= ExitSuccess) $ ierror "FAILURE: Bitcode optimization"
       buildObj m dest
           = withTmpFile $ \bitcode -> do
-              writeBC m bitcode
-              exit <- rawSystem "llc" ["--disable-fp-elim", "-filetype=obj", opt, "-o", dest, bitcode]
+              writeBitcodeToFile m bitcode
+              exit <- rawSystem "llc" ["--disable-fp-elim", "-filetype=obj", "-O" ++ show optLevel, "-o", dest, bitcode]
               when (exit /= ExitSuccess) $ ierror "FAILURE: Object file output"
 
       withTmpFile :: (FilePath -> IO a) -> IO a
@@ -197,12 +191,19 @@ mergeEnvs es = do
                    , cgDepth = length env
                    }
 
-codegen :: MemoryBuffer -> [(Name, SDecl)] -> LLVM c s (STModule c s)
-codegen rts defs = do
+codegen :: MemoryBuffer -> [(Name, SDecl)] -> Int -> LLVM c s (STModule c s)
+codegen rts defs optLevel = do
   m <- parseBitcode rts
   case m of
     Left err -> ierror $ "Failed to load RTS definitions:\n" ++ err
-    Right mod -> runModuleGen mod (buildModule defs)
+    Right mod ->
+        do runModuleGen mod (buildModule defs)
+           when (optLevel > 0) $ do
+                              pm <- createPassManager
+                              populateModulePassManager (fromIntegral optLevel) 0 pm
+                              populateLTOPassManager (fromIntegral optLevel) 0  True True pm
+                              void $ runPassManager pm mod
+           return mod
 
 buildModule :: [(Name, SDecl)] -> ModuleGen c s (STModule c s)
 buildModule defs = do

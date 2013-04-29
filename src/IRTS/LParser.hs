@@ -62,7 +62,7 @@ fovm tgt outty f
          case checked of
            OK c -> case tgt of
                      ViaC -> codegenC c "a.out" outty ["math.h"] "" "" TRACE
-                     ViaLLVM -> codegenLLVM c "a.out" outty
+                     ViaLLVM -> codegenLLVM c "a.out" outty 0
                      ViaJava -> codegenJava [] c "a.out" [] [] outty
            Error e -> fail $ show e 
 
