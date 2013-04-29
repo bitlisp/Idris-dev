@@ -84,6 +84,9 @@ runICG env (MkICG cg) = evalStateT cg $
 getUndefVal :: ICG c s (STValue c s)
 getUndefVal = getUndef =<< getValTy
 
+getNullVal :: ICG c s (STValue c s)
+getNullVal = constPtrNull =<< getValTy
+
 getValTy :: (Monad (m c s), MonadMG m) => m c s (STType c s)
 getValTy = pointerType =<< getPrimTy "ctor"
 
@@ -349,7 +352,7 @@ compile expr = do
            case returnTy of
              FUnit -> getUnit
              _ -> boxVal result
-    SNothing -> getUnit -- Could be undef, except sometimes erasure wipes out a 'return ()' which gets EVALed.
+    SNothing -> getNullVal -- Could be undef, except sometimes erasure wipes out a 'return ()' which gets EVALed.
     SError msg ->
         do msgPtr <- buildGlobalStringPtr "errorMsg" (msg ++ "\n")
            putStr <- getPrim "putStr"
@@ -503,7 +506,7 @@ compileConst c
     | elem c [ IType, BIType, FlType, ChType, StrType
              , B8Type, B16Type, B32Type, B64Type
              , PtrType, VoidType, Forgot
-             ] = getUnit -- Could be undef, except might get EVALed
+             ] = getNullVal -- Could be undef, except might get EVALed
     | otherwise = compileConstUnboxed c >>= boxVal
 
 compileConstUnboxed :: Const -> ICG c s (STValue c s)
@@ -607,15 +610,8 @@ unbox' v ty = do
   valPtr <- buildInBoundsGEP "" box [zero, one]
   buildLoad "" valPtr
 
-
 buildIsVal :: STValue c s -> ICG c s (STValue c s)
-buildIsVal v = do
-  i8 <- intType 8
-  ptr <- pointerType i8
-  valPtr <- buildPointerCast "" v ptr
-  valTag <- constInt i8 (2^8 - 1) False
-  byte <- buildLoad "" valPtr
-  buildICmp "" IntEQ byte valTag
+buildIsVal v = buildICmp "" IntEQ v =<< getNullVal
 
 mkCon :: Int -> [STValue c s] -> ICG c s (STValue c s)
 mkCon tag args = do
