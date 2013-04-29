@@ -15,6 +15,7 @@ import System.FilePath ((</>), splitDirectories)
 import System.Directory
 import qualified System.FilePath.Posix as Px
 import System.Process
+import System.Info (arch)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 
@@ -83,8 +84,12 @@ installJavaLib pkg local verbosity copy version = do
   let dir = datadir $ L.absoluteInstallDirs pkg local copy
   copyFile ("java" </> "executable_pom.xml") (dir </> "executable_pom.xml")
 
-installLLVMRTS pkg local copy =
-    copyFile ("llvm" </> "rts.bc") ((datadir $ L.absoluteInstallDirs pkg local copy) </> "llvm" </> "rts.bc")
+llvmRTSPath :: String
+llvmRTSPath = "llvm" </> "rts-" ++ arch
+
+installLLVMRTS pkg local copy = do
+  putStrLn $ "Installing LLVM RTS for " ++ arch ++ "..."
+  copyFile (llvmRTSPath ++ ".bc") ((datadir $ L.absoluteInstallDirs pkg local copy) </> llvmRTSPath ++ ".bc")
 
 -- This is a hack. I don't know how to tell cabal that a data file needs
 -- installing but shouldn't be in the distribution. And it won't make the
@@ -116,8 +121,9 @@ checkStdLib local verbosity
 
 checkJavaLib verbosity = mvn verbosity [ "-f", "java" </> "pom.xml", "package" ]
 
-buildLLVMRTS verbosity = P.runProgramInvocation verbosity . P.simpleProgramInvocation "llvm-as" $
-                         ["llvm" </> "rts.ll"]
+buildLLVMRTS verbosity = do
+  putStrLn $ "Building LLVM RTS for " ++ arch ++ "..."
+  P.runProgramInvocation verbosity . P.simpleProgramInvocation "llvm-as" $ [llvmRTSPath ++ ".ll"]
 
 javaFlag flags = 
   case lookup (FlagName "java") (S.configConfigurationsFlags flags) of

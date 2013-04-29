@@ -15,8 +15,10 @@ import LLVM.ST
 
 import System.IO
 import System.Directory (removeFile)
+import System.FilePath ((</>))
 import System.Process (rawSystem)
 import System.Exit (ExitCode(..))
+import System.Info (arch)
 import Control.Monad
 import Control.Monad.State
 import Data.List
@@ -30,7 +32,7 @@ codegenLLVM :: [(Name, SDecl)] ->
                OutputType ->
                IO ()
 codegenLLVM defs out exec = do
-  rtsBuf <- fmap (++ "/llvm/rts.bc") getDataDir >>= createMemoryBufferWithContentsOfFile
+  rtsBuf <- fmap (</> "llvm" </> "rts-" ++ arch ++ ".bc") getDataDir >>= createMemoryBufferWithContentsOfFile
   ctx <- getGlobalContext
   let mod = run ctx (codegen rtsBuf defs)
   case verifyModule mod of
