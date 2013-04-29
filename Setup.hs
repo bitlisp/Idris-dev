@@ -18,6 +18,8 @@ import System.Process
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 
+import Data.Maybe (fromMaybe)
+
 -- After Idris is built, we need to check and install the prelude and other libs
 
 make verbosity = P.runProgramInvocation verbosity . P.simpleProgramInvocation "make"
@@ -81,6 +83,9 @@ installJavaLib pkg local verbosity copy version = do
   let dir = datadir $ L.absoluteInstallDirs pkg local copy
   copyFile ("java" </> "executable_pom.xml") (dir </> "executable_pom.xml")
 
+installLLVMRTS pkg local copy =
+    copyFile ("llvm" </> "rts.bc") ((datadir $ L.absoluteInstallDirs pkg local copy) </> "llvm" </> "rts.bc")
+
 -- This is a hack. I don't know how to tell cabal that a data file needs
 -- installing but shouldn't be in the distribution. And it won't make the
 -- distribution if it's not there, so instead I just delete
@@ -111,11 +116,16 @@ checkStdLib local verbosity
 
 checkJavaLib verbosity = mvn verbosity [ "-f", "java" </> "pom.xml", "package" ]
 
+buildLLVMRTS verbosity = P.runProgramInvocation verbosity . P.simpleProgramInvocation "llvm-as" $
+                         ["llvm" </> "rts.ll"]
+
 javaFlag flags = 
   case lookup (FlagName "java") (S.configConfigurationsFlags flags) of
     Just True -> True
     Just False -> False
     Nothing -> False
+
+llvmFlag flags = fromMaybe False (lookup (FlagName "llvm") (S.configConfigurationsFlags flags))
 
 preparePoms version
     = do pomTemplate <- TIO.readFile ("java" </> "pom_template.xml")
@@ -132,8 +142,9 @@ main = do
   defaultMainWithHooks $ simpleUserHooks
         { postCopy = \ _ flags pkg lbi -> do
               let verb = S.fromFlag $ S.copyVerbosity flags
-              installStdLib pkg lbi verb
-                                    (S.fromFlag $ S.copyDest flags)
+                  dest = S.fromFlag $ S.copyDest flags
+              installStdLib pkg lbi verb dest
+              when (llvmFlag $ configFlags lbi) (installLLVMRTS pkg lbi dest)
         , postInst = \ _ flags pkg lbi -> do
               let verb = (S.fromFlag $ S.installVerbosity flags)
               installStdLib pkg lbi verb
@@ -145,6 +156,7 @@ main = do
                                    NoCopyDest 
                                    (pkgVersion . package $ localPkgDescr lbi)
                    )
+              when (llvmFlag $ configFlags lbi) (installLLVMRTS pkg lbi NoCopyDest)
         , postConf  = \ _ flags _ lbi -> do
               removeLibIdris lbi (S.fromFlag $ S.configVerbosity flags)
               when (javaFlag $ configFlags lbi) 
@@ -156,5 +168,6 @@ main = do
         , postBuild = \ _ flags _ lbi -> do
               let verb = S.fromFlag $ S.buildVerbosity flags
               checkStdLib lbi verb
+              when (llvmFlag $ configFlags lbi) (buildLLVMRTS verb)
               when (javaFlag $ configFlags lbi) (checkJavaLib verb)
         }

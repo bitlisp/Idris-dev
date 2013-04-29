@@ -53,7 +53,6 @@ Data-files:            rts/libidris_rts.a rts/idris_rts.h rts/idris_gc.h
                        js/Runtime-common.js
                        js/Runtime-node.js
                        js/Runtime-browser.js
-                       llvm/rts.bc
 
 Extra-source-files:    lib/Makefile  lib/*.idr lib/Prelude/*.idr 
                        lib/Network/*.idr lib/Control/*.idr
@@ -76,6 +75,10 @@ source-repository head
 
 Flag Java
   Description: Build the Java RTS
+  Default:     False
+
+Flag llvm
+  Description: Build the LLVM RTS
   Default:     False
 
 
