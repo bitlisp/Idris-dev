@@ -3,10 +3,15 @@ cabal-dev/
 *.ibc
 *.o
 *.a
+*.so
+*.dll
+*.dylib
 *.swp
 *~
+custom.mk
 test/output
 test/test???/output
 test/reg???/output
 test/test???/*.exe
 test/reg???/*.exe
+

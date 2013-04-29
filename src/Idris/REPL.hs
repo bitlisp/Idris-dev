@@ -21,8 +21,10 @@ import Idris.Completion
 
 import Paths_idris
 import Util.System
+import Util.DynamicLinker
 
 import Core.Evaluate
+import Core.Execute (execute)
 import Core.ProofShell
 import Core.TT
 import Core.Constraints
@@ -50,6 +52,8 @@ import Data.Maybe
 import Data.List
 import Data.Char
 import Data.Version
+
+import Debug.Trace
 
 -- | Run the REPL
 repl :: IState -- ^ The initial state
@@ -125,7 +129,7 @@ resolveProof :: Name -> Idris Name
 resolveProof n'
   = do i <- getIState
        ctxt <- getContext
-       n <- case lookupNames Nothing n' ctxt of
+       n <- case lookupNames n' ctxt of
                  [x] -> return x
                  [] -> return n'
                  ns -> fail $ pshow i (CantResolveAlts (map show ns))
@@ -175,6 +179,9 @@ insertScript prf (x : xs) = x : insertScript prf xs
 
 process :: FilePath -> Command -> Idris ()
 process fn Help = iputStrLn displayHelp
+process fn (ChangeDirectory f)
+                 = do liftIO $ setCurrentDirectory f
+                      return ()
 process fn (Eval t) 
                  = do (tm, ty) <- elabVal toplevel False t
                       ctxt <- getContext
@@ -185,25 +192,25 @@ process fn (Eval t)
                       imp <- impShow
                       iputStrLn (showImp imp (delab ist tm') ++ " : " ++ 
                                  showImp imp (delab ist ty'))
-process fn (ExecVal t) 
-                    = do (tm, ty) <- elabVal toplevel False t 
---                                         (PApp fc (PRef fc (NS (UN "print") ["Prelude"]))
---                                                           [pexp t])
-                         (tmpn, tmph) <- liftIO tempfile
-                         liftIO $ hClose tmph
-                         t <- target
-                         compile t tmpn tm
-                         liftIO $ system tmpn
-                         return ()
-    where fc = FC "(input)" 0 
-process fn (Check (PRef _ n))
+process fn (ExecVal t)
                   = do ctxt <- getContext
                        ist <- getIState
+                       (tm, ty) <- elabVal toplevel False t
+--                       let tm' = normaliseAll ctxt [] tm
+                       let ty' = normaliseAll ctxt [] ty
+                       res <- execute tm
                        imp <- impShow
-                       case lookupTy Nothing n ctxt of
-                        ts@(_:_) -> mapM_ (\t -> iputStrLn $ show n ++ " : " ++
-                                                       showImp imp (delab ist t)) ts
-                        [] -> iputStrLn $ "No such variable " ++ show n
+                       iputStrLn (showImp imp (delab ist res) ++ " : " ++
+                                  showImp imp (delab ist ty'))
+                       return ()
+process fn (Check (PRef _ n))
+   = do ctxt <- getContext
+        ist <- getIState
+        imp <- impShow
+        case lookupNames n ctxt of
+             ts@(_:_) -> mapM_ (\n -> iputStrLn $ show n ++ " : " ++
+                                        showImp imp (delabTy ist n)) ts
+             [] -> iputStrLn $ "No such variable " ++ show n
 process fn (Check t) = do (tm, ty) <- elabVal toplevel False t
                           ctxt <- getContext
                           ist <- getIState 
@@ -213,7 +220,7 @@ process fn (Check t) = do (tm, ty) <- elabVal toplevel False t
                                     showImp imp (delab ist ty))
 
 process fn (DocStr n) = do i <- getIState
-                           case lookupCtxtName Nothing n (idris_docstrings i) of
+                           case lookupCtxtName n (idris_docstrings i) of
                                 [] -> iputStrLn $ "No documentation for " ++ show n
                                 ns -> mapM_ showDoc ns 
     where showDoc (n, d) 
@@ -230,8 +237,8 @@ process fn Universes = do i <- getIState
                             OK _ -> iputStrLn "Universes OK"
 process fn (Defn n) = do i <- getIState
                          iputStrLn "Compiled patterns:\n"
-                         liftIO $ print (lookupDef Nothing n (tt_ctxt i))
-                         case lookupCtxt Nothing n (idris_patdefs i) of
+                         liftIO $ print (lookupDef n (tt_ctxt i))
+                         case lookupCtxt n (idris_patdefs i) of
                             [] -> return ()
                             [d] -> do iputStrLn "Original definiton:\n"
                                       mapM_ (printCase i) d
@@ -248,25 +255,25 @@ process fn (TotCheck n) = do i <- getIState
                                 _ -> return ()
 process fn (DebugInfo n) 
    = do i <- getIState
-        let oi = lookupCtxtName Nothing n (idris_optimisation i)
+        let oi = lookupCtxtName n (idris_optimisation i)
         when (not (null oi)) $ iputStrLn (show oi)
-        let si = lookupCtxt Nothing n (idris_statics i)
+        let si = lookupCtxt n (idris_statics i)
         when (not (null si)) $ iputStrLn (show si)
-        let di = lookupCtxt Nothing n (idris_datatypes i)
+        let di = lookupCtxt n (idris_datatypes i)
         when (not (null di)) $ iputStrLn (show di)
-        let d = lookupDef Nothing n (tt_ctxt i)
+        let d = lookupDef n (tt_ctxt i)
         when (not (null d)) $ liftIO $
            do print (head d)
-        let cg = lookupCtxtName Nothing n (idris_callgraph i)
+        let cg = lookupCtxtName n (idris_callgraph i)
         findUnusedArgs (map fst cg)
         i <- getIState
-        let cg' = lookupCtxtName Nothing n (idris_callgraph i)
+        let cg' = lookupCtxtName n (idris_callgraph i)
         sc <- checkSizeChange n
         iputStrLn $ "Size change: " ++ show sc
         when (not (null cg')) $ do iputStrLn "Call graph:\n"
                                    iputStrLn (show cg')
 process fn (Info n) = do i <- getIState
-                         case lookupCtxt Nothing n (idris_classes i) of
+                         case lookupCtxt n (idris_classes i) of
                               [c] -> classInfo c
                               _ -> iputStrLn "Not a class"
 process fn (Search t) = iputStrLn "Not implemented"
@@ -292,8 +299,17 @@ process fn (RmProof n')
                                  let ms = idris_metavars i
                                  putIState $ i { idris_metavars = n : ms }
 
-process fn (AddProof prf)
-  = do let fb = fn ++ "~"
+process fn' (AddProof prf)
+  = do fn <- do
+         ex <- liftIO $ doesFileExist fn'
+         let fnExt = fn' <.> "idr"
+         exExt <- liftIO $ doesFileExist fnExt
+         if ex
+            then return fn'
+            else if exExt
+                    then return fnExt
+                    else fail $ "Neither \""++fn'++"\" nor \""++fnExt++"\" exist"
+       let fb = fn ++ "~"
        liftIO $ copyFile fn fb -- make a backup in case something goes wrong!
        prog <- liftIO $ readFile fb
        i <- getIState
@@ -323,7 +339,7 @@ process fn (ShowProof n')
 process fn (Prove n')
      = do ctxt <- getContext
           ist <- getIState
-          n <- case lookupNames Nothing n' ctxt of
+          n <- case lookupNames n' ctxt of
                     [x] -> return x
                     [] -> return n'
                     ns -> fail $ pshow ist (CantResolveAlts (map show ns))
@@ -374,13 +390,26 @@ process fn (Pattelab t)
           iputStrLn $ show tm ++ "\n\n : " ++ show ty
 
 process fn (Missing n) = do i <- getIState
-                            case lookupDef Nothing n (tt_ctxt i) of
+                            case lookupDef n (tt_ctxt i) of
                                 [CaseOp _ _ _ _ _ args t _ _]
                                     -> do tms <- genMissing n args t
                                           iputStrLn (showSep "\n" (map (showImp True) tms))
                                 [] -> iputStrLn $ show n ++ " undefined"
                                 _ -> iputStrLn $ "Ambiguous name"
-process fn Metavars 
+process fn (DynamicLink l) = do i <- getIState
+                                let lib = trim l
+                                handle <- lift $ tryLoadLib lib
+                                case handle of
+                                  Nothing -> iputStrLn $ "Could not load dynamic lib \"" ++ l ++ "\""
+                                  Just x -> do let libs = idris_dynamic_libs i
+                                               putIState $ i { idris_dynamic_libs = x:libs }
+    where trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+process fn ListDynamic = do i <- getIState
+                            iputStrLn "Dynamic libraries:"
+                            showLibs $ idris_dynamic_libs i
+    where showLibs []                = return ()
+          showLibs ((Lib name _):ls) = do iputStrLn $ "\t" ++ name; showLibs ls
+process fn Metavars
                  = do ist <- getIState
                       let mvs = idris_metavars ist \\ primDefs
                       case mvs of
@@ -411,7 +440,7 @@ dumpInstance :: Name -> Idris ()
 dumpInstance n = do i <- getIState
                     ctxt <- getContext
                     imp <- impShow
-                    case lookupTy Nothing n ctxt of
+                    case lookupTy n ctxt of
                          ts -> mapM_ (\t -> iputStrLn $ showImp imp (delab i t)) ts
 
 showTotal t@(Partial (Other ns)) i
@@ -426,7 +455,7 @@ displayHelp = let vstr = showVersion version in
               "--------------" ++ map (\x -> '-') vstr ++ "\n\n" ++
               concatMap cmdInfo helphead ++
               concatMap cmdInfo help
-  where cmdInfo (cmds, args, text, _) = "   " ++ col 16 12 (showSep " " cmds) args text 
+  where cmdInfo (cmds, args, text) = "   " ++ col 16 12 (showSep " " cmds) (show args) text 
         col c1 c2 l m r = 
             l ++ take (c1 - length l) (repeat ' ') ++ 
             m ++ take (c2 - length m) (repeat ' ') ++ r ++ "\n"
@@ -442,45 +471,46 @@ parseTarget _ = error "unknown target" -- FIXME: partial function
 
 parseArgs :: [String] -> [Opt]
 parseArgs [] = []
-parseArgs ("--quiet":ns)        = Quiet : (parseArgs ns)
-parseArgs ("--log":lvl:ns)      = OLogging (read lvl) : (parseArgs ns)
-parseArgs ("--noprelude":ns)    = NoPrelude : (parseArgs ns)
-parseArgs ("--check":ns)        = NoREPL : (parseArgs ns)
-parseArgs ("-o":n:ns)           = NoREPL : Output n : (parseArgs ns)
-parseArgs ("-no":n:ns)          = NoREPL : NewOutput n : (parseArgs ns)
-parseArgs ("--typecase":ns)     = TypeCase : (parseArgs ns)
-parseArgs ("--typeintype":ns)   = TypeInType : (parseArgs ns)
-parseArgs ("--total":ns)        = DefaultTotal : (parseArgs ns)
-parseArgs ("--partial":ns)      = DefaultPartial : (parseArgs ns)
-parseArgs ("--warnpartial":ns)  = WarnPartial : (parseArgs ns)
-parseArgs ("--nocoverage":ns)   = NoCoverage : (parseArgs ns)
-parseArgs ("--errorcontext":ns) = ErrContext : (parseArgs ns)
-parseArgs ("--help":ns)         = Usage : (parseArgs ns)
-parseArgs ("--link":ns)         = ShowLibs : (parseArgs ns)
-parseArgs ("--libdir":ns)       = ShowLibdir : (parseArgs ns)
-parseArgs ("--include":ns)      = ShowIncs : (parseArgs ns)
-parseArgs ("--version":ns)      = Ver : (parseArgs ns)
-parseArgs ("--verbose":ns)      = Verbose : (parseArgs ns)
-parseArgs ("--ibcsubdir":n:ns)  = IBCSubDir n : (parseArgs ns)
-parseArgs ("-i":n:ns)           = ImportDir n : (parseArgs ns)
-parseArgs ("--warn":ns)         = WarnOnly : (parseArgs ns)
-parseArgs ("--package":n:ns)    = Pkg n : (parseArgs ns)
-parseArgs ("-p":n:ns)           = Pkg n : (parseArgs ns)
-parseArgs ("--build":n:ns)      = PkgBuild n : (parseArgs ns)
-parseArgs ("--install":n:ns)    = PkgInstall n : (parseArgs ns)
-parseArgs ("--clean":n:ns)      = PkgClean n : (parseArgs ns)
-parseArgs ("--bytecode":n:ns)   = NoREPL : BCAsm n : (parseArgs ns)
-parseArgs ("--fovm":n:ns)       = NoREPL : FOVM n : (parseArgs ns)
-parseArgs ("-S":ns)             = OutputTy Raw : (parseArgs ns)
-parseArgs ("-c":ns)             = OutputTy Object : (parseArgs ns)
-parseArgs ("--dumpdefuns":n:ns) = DumpDefun n : (parseArgs ns)
-parseArgs ("--dumpcases":n:ns)  = DumpCases n : (parseArgs ns)
-parseArgs ("--target":n:ns)     = UseTarget (parseTarget n) : (parseArgs ns)
-parseArgs (n:ns)                = Filename n : (parseArgs ns)
+parseArgs ("--quiet":ns)         = Quiet : (parseArgs ns)
+parseArgs ("--log":lvl:ns)       = OLogging (read lvl) : (parseArgs ns)
+parseArgs ("--noprelude":ns)     = NoPrelude : (parseArgs ns)
+parseArgs ("--check":ns)         = NoREPL : (parseArgs ns)
+parseArgs ("-o":n:ns)            = NoREPL : Output n : (parseArgs ns)
+parseArgs ("-no":n:ns)           = NoREPL : NewOutput n : (parseArgs ns)
+parseArgs ("--typecase":ns)      = TypeCase : (parseArgs ns)
+parseArgs ("--typeintype":ns)    = TypeInType : (parseArgs ns)
+parseArgs ("--total":ns)         = DefaultTotal : (parseArgs ns)
+parseArgs ("--partial":ns)       = DefaultPartial : (parseArgs ns)
+parseArgs ("--warnpartial":ns)   = WarnPartial : (parseArgs ns)
+parseArgs ("--nocoverage":ns)    = NoCoverage : (parseArgs ns)
+parseArgs ("--errorcontext":ns)  = ErrContext : (parseArgs ns)
+parseArgs ("--help":ns)          = Usage : (parseArgs ns)
+parseArgs ("--link":ns)          = ShowLibs : (parseArgs ns)
+parseArgs ("--libdir":ns)        = ShowLibdir : (parseArgs ns)
+parseArgs ("--include":ns)       = ShowIncs : (parseArgs ns)
+parseArgs ("--version":ns)       = Ver : (parseArgs ns)
+parseArgs ("--verbose":ns)       = Verbose : (parseArgs ns)
+parseArgs ("--ibcsubdir":n:ns)   = IBCSubDir n : (parseArgs ns)
+parseArgs ("-i":n:ns)            = ImportDir n : (parseArgs ns)
+parseArgs ("--warn":ns)          = WarnOnly : (parseArgs ns)
+parseArgs ("--package":n:ns)     = Pkg n : (parseArgs ns)
+parseArgs ("-p":n:ns)            = Pkg n : (parseArgs ns)
+parseArgs ("--build":n:ns)       = PkgBuild n : (parseArgs ns)
+parseArgs ("--install":n:ns)     = PkgInstall n : (parseArgs ns)
+parseArgs ("--clean":n:ns)       = PkgClean n : (parseArgs ns)
+parseArgs ("--bytecode":n:ns)    = NoREPL : BCAsm n : (parseArgs ns)
+parseArgs ("--fovm":n:ns)        = NoREPL : FOVM n : (parseArgs ns)
+parseArgs ("-S":ns)              = OutputTy Raw : (parseArgs ns)
+parseArgs ("-c":ns)              = OutputTy Object : (parseArgs ns)
+parseArgs ("--dumpdefuns":n:ns)  = DumpDefun n : (parseArgs ns)
+parseArgs ("--dumpcases":n:ns)   = DumpCases n : (parseArgs ns)
+parseArgs ("--target":n:ns)      = UseTarget (parseTarget n) : (parseArgs ns)
+parseArgs ("-XTypeProviders":ns) = Extension TypeProviders : (parseArgs ns)
+parseArgs (n:ns)                 = Filename n : (parseArgs ns)
 
 helphead =
-  [ (["Command"], "Arguments", "Purpose", ""),
-    ([""], "", "", "")
+  [ (["Command"], SpecialHeaderArg, "Purpose"),
+    ([""], NoArg, "")
   ]
 
 
@@ -511,6 +541,7 @@ idrisMain opts =
                    xs -> last xs
        when (DefaultTotal `elem` opts) $ do i <- getIState
                                             putIState (i { default_total = True })
+       mapM_ addLangExt (opt getLanguageExt opts)
        setREPL runrepl
        setQuiet quiet
        setVerbose runrepl
@@ -531,6 +562,7 @@ idrisMain opts =
          [] -> setIBCSubDir ""
          (d:_) -> setIBCSubDir d
        setImportDirs importdirs
+
        addPkgDir "base"
        mapM_ addPkgDir pkgdirs
        elabPrims
@@ -610,8 +642,12 @@ getOutputTy :: Opt -> Maybe OutputType
 getOutputTy (OutputTy t) = Just t
 getOutputTy _ = Nothing
 
+getLanguageExt :: Opt -> Maybe LanguageExt
+getLanguageExt (Extension e) = Just e
+getLanguageExt _ = Nothing
+
 opt :: (Opt -> Maybe a) -> [Opt] -> [a]
-opt = mapMaybe 
+opt = mapMaybe
 
 ver = showVersion version
 

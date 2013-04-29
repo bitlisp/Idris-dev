@@ -1,5 +1,5 @@
 Name:           idris
-Version:        0.9.7
+Version:        0.9.8
 License:        BSD3
 License-file:   LICENSE
 Author:         Edwin Brady
@@ -81,11 +81,14 @@ Flag llvm
   Description: Build the LLVM RTS
   Default:     False
 
+Flag NoEffects
+  Description: Do not build the effects package
+  Default:     False
 
 Executable     idris
                Main-is: Main.hs
                hs-source-dirs: src
-               Other-modules: Core.TT, Core.Evaluate, Core.Typecheck,
+               Other-modules: Core.TT, Core.Evaluate, Core.Execute, Core.Typecheck,
                               Core.ProofShell, Core.ProofState, Core.CoreParser,
                               Core.ShellParser, Core.Unify, Core.Elaborate,
                               Core.CaseTree, Core.Constraints,
@@ -99,7 +102,7 @@ Executable     idris
                               Idris.DataOpts, Idris.Transforms, Idris.DSL,
                               Idris.UnusedArgs, Idris.Docs, Idris.Completion,
 
-                              Util.Pretty, Util.System,
+                              Util.Pretty, Util.System, Util.DynamicLinker,
                               Pkg.Package, Pkg.PParser,
 
                               IRTS.Lang, IRTS.LParser, IRTS.Bytecode, IRTS.Simplified,
@@ -114,9 +117,18 @@ Executable     idris
                                 haskeline>=0.7, split, directory,
                                 containers, process, transformers, filepath,
                                 directory, binary, bytestring, text, pretty,
-                                language-java>=0.2.2, llvm-st>3 && <4
+                                language-java>=0.2.2, llvm-st>3 && <4, libffi
 
                Extensions:      MultiParamTypeClasses, FunctionalDependencies,
                                 FlexibleInstances, TemplateHaskell
                ghc-prof-options: -auto-all -caf-all
                ghc-options: -rtsopts
+               if os(linux)
+                  cpp-options: -DLINUX
+                  build-depends: unix
+               if os(darwin)
+                  cpp-options: -DMACOSX
+                  build-depends: unix
+               if os(windows)
+                  cpp-options: -DWINDOWS
+                  build-depends: Win32

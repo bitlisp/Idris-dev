@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE PatternGuards, ScopedTypeVariables #-}
 -- | Parse the full Idris language.
 module Idris.Parser where
 
@@ -11,7 +11,10 @@ import Idris.ElabTerm
 import Idris.Coverage
 import Idris.IBC
 import Idris.Unlit
+import Idris.Providers
 import Paths_idris
+
+import Util.DynamicLinker
 
 import Core.CoreParser
 import Core.TT
@@ -27,6 +30,7 @@ import qualified Text.Parsec.Token as PTok
 import Data.List
 import Data.List.Split(splitOn)
 import Control.Monad.State
+import Control.Monad.Error
 import Debug.Trace
 import Data.Maybe
 import System.FilePath
@@ -339,7 +343,8 @@ pDecl syn = do notEndBlock
     <|> pClass syn
     <|> pInstance syn
     <|> do d <- pDSL syn; return [d]
-    <|> pDirective
+    <|> pDirective syn
+    <|> pProvider syn
     <|> try (do reserved "import"; fp <- identifier
                 fail "imports must be at the top of file") 
 
@@ -543,7 +548,7 @@ pClass syn = do doc <- option "" (pDocComment '|')
                 acc <- pAccessibility
                 reserved "class"; fc <- pfc; cons <- pConstList syn; n_in <- pName
                 let n = expandNS syn n_in
-                cs <- many1 carg
+                cs <- many carg
                 reserved "where"; openBlock 
                 ds <- many $ pFunDecl syn
                 closeBlock
@@ -564,7 +569,7 @@ pInstance syn = do reserved "instance"; fc <- pfc
                                 return (Just n))
                    cs <- pConstList syn
                    cn <- pName
-                   args <- many1 (pSimpleExpr syn)
+                   args <- many (pSimpleExpr syn)
                    let sc = PApp fc (PRef fc cn) (map pexp args)
                    let t = bindList (PPi constraint) (map (\x -> (MN 0 "c", x)) cs) sc
                    reserved "where"; openBlock 
@@ -609,7 +614,6 @@ pNoExtExpr syn =
      <|> pRewriteTerm syn
      <|> pPi syn 
      <|> pDoBlock syn
-     <|> pComprehension syn
     
 pExtensions :: SyntaxInfo -> [Syntax] -> IParser PTerm
 pExtensions syn rules = choice (map (try . pExt syn) (filter valid rules))
@@ -759,6 +763,7 @@ pSimpleExpr syn =
                     fc <- pfc
                     return (PInferRef fc x))
         <|> try (pList syn)
+        <|> try (pComprehension syn)
         <|> try (pAlt syn)
         <|> try (pIdiom syn)
         <|> try (do lchar '('
@@ -796,15 +801,29 @@ pCaseOpt syn = do lhs <- pExpr (syn { inPattern = True })
                   symbol "=>"; rhs <- pExpr syn
                   return (lhs, rhs)
 
+-- bit of a hack here. If the integer doesn't fit in an Int, treat it as a
+-- big integer, otherwise try fromInteger and the constants as alternatives.
+-- a better solution would be to fix fromInteger to work with Integer, as the
+-- name suggests, rather than Int
+
 modifyConst :: SyntaxInfo -> FC -> PTerm -> PTerm
-modifyConst syn fc (PConstant (I x)) 
+modifyConst syn fc (PConstant (BI x)) 
+    | not (fitsInt x) = PAlternative False 
+                           [PConstant (BI x),
+                            PApp fc (PRef fc (UN "fromInteger"))
+                                 [pexp (PConstant (I (fromInteger x)))]]
     | not (inPattern syn)
         = PAlternative False
-             [PApp fc (PRef fc (UN "fromInteger")) [pexp (PConstant (I x))],
-              PConstant (I x), PConstant (BI (toEnum x))]
+             [PApp fc (PRef fc (UN "fromInteger")) [pexp (PConstant (I (fromInteger x)))],
+              PConstant (I (fromInteger x)), PConstant (BI x)]
     | otherwise = PAlternative False
-                     [PConstant (I x), PConstant (BI (toEnum x))]
+                     [PConstant (I (fromInteger x)), PConstant (BI x)]
 modifyConst syn fc x = x
+
+fitsInt :: Integer -> Bool
+fitsInt x = let xInt :: Int = fromInteger x
+                xInteger :: Integer = toInteger xInt in
+                x == xInteger
 
 pList syn = do lchar '['; fc <- pfc; xs <- sepBy (pExpr syn) (lchar ','); lchar ']'
                return (mkList fc xs)
@@ -863,7 +882,7 @@ pApp syn = do f <- pSimpleExpr syn
               return (dslify i $ PApp fc f args)
   where
     dslify i (PApp fc (PRef _ f) [a])
-        | [d] <- lookupCtxt Nothing f (idris_dsls i)
+        | [d] <- lookupCtxt f (idris_dsls i)
             = desugar (syn { dsl_info = d }) i (getTm a)
     dslify i t = t
 
@@ -957,7 +976,9 @@ pLet syn = try (do reserved "let"; n <- pName;
                    return (PCase fc v [(pat, sc)]))
 
 pPi syn = 
-     try (do lazy <- option False (do lchar '|'; return True)
+     try (do lazy <- if implicitAllowed syn -- laziness is top level only
+                        then option False (do lchar '|'; return True)
+                        else return False
              st <- pStatic
              lchar '('; xt <- tyDeclList syn; lchar ')'
              doc <- option "" (pDocComment '^')
@@ -1102,8 +1123,7 @@ pConstant = do reserved "Integer";return BIType
         <|> do reserved "Bits32"; return B32Type
         <|> do reserved "Bits64"; return B64Type
         <|> try (do f <- float;   return $ Fl f)
---         <|> try (do i <- natural; lchar 'L'; return $ BI i)
-        <|> try (do i <- natural; return $ I (fromInteger i))
+        <|> try (do i <- natural; return $ BI i)
         <|> try (do s <- strlit;  return $ Str s)
         <|> try (do c <- chlit;   return $ Ch c)
 
@@ -1465,34 +1485,50 @@ pWhereblock n syn
          closeBlock
          return (concat ds, map (\x -> (x, decoration syn x)) dns)
 
-pDirective :: IParser [PDecl]
-pDirective = try (do lchar '%'; reserved "lib"; lib <- strlit;
-                     return [PDirective (do addLib lib
-                                            addIBC (IBCLib lib))])
-         <|> try (do lchar '%'; reserved "link"; obj <- strlit;
-                     return [PDirective (do datadir <- liftIO getDataDir
-                                            o <- liftIO $ findInPath [".", datadir] obj
-                                            addIBC (IBCObj o)
-                                            addObjectFile o)])
-         <|> try (do lchar '%'; reserved "include"; hdr <- strlit;
-                     return [PDirective (do addHdr hdr
-                                            addIBC (IBCHeader hdr))])
-         <|> try (do lchar '%'; reserved "hide"; n <- iName []
-                     return [PDirective (do setAccessibility n Hidden
-                                            addIBC (IBCAccess n Hidden))])
-         <|> try (do lchar '%'; reserved "freeze"; n <- iName []
-                     return [PDirective (do setAccessibility n Frozen
-                                            addIBC (IBCAccess n Frozen))])
-         <|> try (do lchar '%'; reserved "access"; acc <- pAccessibility'
-                     return [PDirective (do i <- getIState
-                                            putIState (i { default_access = acc }))])
-         <|> try (do lchar '%'; reserved "default"; tot <- pTotality
-                     i <- getState
-                     setState (i { default_total = tot } )
-                     return [PDirective (do i <- getIState
-                                            putIState (i { default_total = tot }))])
-         <|> try (do lchar '%'; reserved "logging"; i <- natural;
-                     return [PDirective (setLogLevel (fromInteger i))])
+pDirective :: SyntaxInfo -> IParser [PDecl]
+pDirective syn = try (do lchar '%'; reserved "lib"; lib <- strlit;
+                         return [PDirective (do addLib lib
+                                                addIBC (IBCLib lib))])
+             <|> try (do lchar '%'; reserved "link"; obj <- strlit;
+                         return [PDirective (do datadir <- liftIO getDataDir
+                                                o <- liftIO $ findInPath [".", datadir] obj
+                                                addIBC (IBCObj o)
+                                                addObjectFile o)])
+             <|> try (do lchar '%'; reserved "include"; hdr <- strlit;
+                         return [PDirective (do addHdr hdr
+                                                addIBC (IBCHeader hdr))])
+             <|> try (do lchar '%'; reserved "hide"; n <- iName []
+                         return [PDirective (do setAccessibility n Hidden
+                                                addIBC (IBCAccess n Hidden))])
+             <|> try (do lchar '%'; reserved "freeze"; n <- iName []
+                         return [PDirective (do setAccessibility n Frozen
+                                                addIBC (IBCAccess n Frozen))])
+             <|> try (do lchar '%'; reserved "access"; acc <- pAccessibility'
+                         return [PDirective (do i <- getIState
+                                                putIState (i { default_access = acc }))])
+             <|> try (do lchar '%'; reserved "default"; tot <- pTotality
+                         i <- getState
+                         setState (i { default_total = tot } )
+                         return [PDirective (do i <- getIState
+                                                putIState (i { default_total = tot }))])
+             <|> try (do lchar '%'; reserved "logging"; i <- natural;
+                         return [PDirective (setLogLevel (fromInteger i))])
+             <|> try (do lchar '%'; reserved "dynamic"; libs <- sepBy1 strlit (lchar ',');
+                         return [PDirective (do added <- addDyLib libs
+                                                case added of
+                                                  Left lib -> addIBC (IBCDyLib (lib_name lib))
+                                                  Right msg ->
+                                                      fail $ msg)])
+             <|> try (do lchar '%'; reserved "language"; ext <- reserved "TypeProviders";
+                         return [PDirective (addLangExt TypeProviders)])
+
+pProvider :: SyntaxInfo -> IParser [PDecl]
+pProvider syn = do lchar '%'; reserved "provide";
+                   lchar '('; n <- pfName; t <- pTSig syn; lchar ')'
+                   fc <- pfc
+                   reserved "with"
+                   e <- pExpr syn
+                   return  [PProvider syn fc n t e]
 
 pTactic :: SyntaxInfo -> IParser PTactic
 pTactic syn = do reserved "intro"; ns <- sepBy pName (lchar ',')
@@ -1520,9 +1556,15 @@ pTactic syn = do reserved "intro"; ns <- sepBy pName (lchar ',')
           <|> do reserved "exact"; t <- pExpr syn;
                  i <- getState
                  return $ Exact (desugar syn i t)
+          <|> do reserved "applyTactic"; t <- pExpr syn;
+                 i <- getState
+                 return $ ApplyTactic (desugar syn i t)
           <|> do reserved "reflect"; t <- pExpr syn;
                  i <- getState
-                 return $ ReflectTac (desugar syn i t)
+                 return $ Reflect (desugar syn i t)
+          <|> do reserved "fill"; t <- pExpr syn;
+                 i <- getState
+                 return $ Fill (desugar syn i t)
           <|> do reserved "try"; t <- pTactic syn;
                  lchar '|';
                  t1 <- pTactic syn

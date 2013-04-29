@@ -10,6 +10,7 @@ import Core.Typecheck
 import IRTS.Lang
 import IRTS.CodegenCommon
 import Util.Pretty
+import Util.DynamicLinker
 
 import Paths_idris
 
@@ -41,6 +42,8 @@ data IOption = IOption { opt_logLevel   :: Int,
     deriving (Show, Eq)
 
 defaultOpts = IOption 0 False False True False False True True False ViaC Executable "" [] []
+
+data LanguageExt = TypeProviders deriving (Show, Eq, Read, Ord)
 
 -- TODO: Add 'module data' to IState, which can be saved out and reloaded quickly (i.e
 -- without typechecking).
@@ -79,19 +82,21 @@ data IState = IState {
     idris_hdrs :: [String],
     proof_list :: [(Name, [String])],
     errLine :: Maybe Int,
-    lastParse :: Maybe Name, 
+    lastParse :: Maybe Name,
     indent_stack :: [Int],
     brace_stack :: [Maybe Int],
     hide_list :: [(Name, Maybe Accessibility)],
     default_access :: Accessibility,
     default_total :: Bool,
     ibc_write :: [IBCWrite],
-    compiled_so :: Maybe String
+    compiled_so :: Maybe String,
+    idris_dynamic_libs :: [DynamicLib],
+    idris_language_extensions :: [LanguageExt]
    }
 
 data SizeChange = Smaller | Same | Bigger | Unknown
     deriving (Show, Eq)
-{-! 
+{-!
 deriving instance Binary SizeChange
 !-}
 
@@ -123,6 +128,7 @@ data IBCWrite = IBCFix FixDecl
               | IBCImport FilePath
               | IBCObj FilePath
               | IBCLib String
+              | IBCDyLib String
               | IBCHeader String
               | IBCAccess Name Accessibility
               | IBCTotal Name Totality
@@ -137,7 +143,7 @@ idrisInit = IState initContext [] [] emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext 
                    emptyContext emptyContext emptyContext emptyContext
                    [] "" defaultOpts 6 [] [] [] [] [] [] [] [] []
-                   [] Nothing Nothing [] [] [] Hidden False [] Nothing
+                   [] Nothing Nothing [] [] [] Hidden False [] Nothing [] []
 
 -- | The monad for the main REPL - reading and processing files and updating 
 -- global state (hence the IO inner monad).
@@ -162,6 +168,7 @@ data Command = Quit
              | TotCheck Name
              | Reload
              | Load FilePath 
+             | ChangeDirectory FilePath
              | ModImport String 
              | Edit
              | Compile Target String
@@ -182,6 +189,8 @@ data Command = Quit
              | Defn Name
              | Info Name
              | Missing Name
+             | DynamicLink FilePath
+             | ListDynamic
              | Pattelab PTerm
              | DebugInfo Name
              | Search PTerm
@@ -223,6 +232,7 @@ data Opt = Filename String
          | FOVM String
          | UseTarget Target
          | OutputTy OutputType
+         | Extension LanguageExt
     deriving (Show, Eq)
 
 -- Parsed declarations
@@ -333,12 +343,22 @@ data PDecl' t
    | PSyntax  FC Syntax -- ^ Syntax definition
    | PMutual  FC [PDecl' t] -- ^ Mutual block
    | PDirective (Idris ()) -- ^ Compiler directive. The parser inserts the corresponding action in the Idris monad.
+   | PProvider SyntaxInfo FC Name t t -- ^ Type provider. The first t is the type, the second is the term
   deriving Functor
 {-!
 deriving instance Binary PDecl'
 !-}
 
-data PClause' t = PClause  FC Name t [t] t [PDecl' t]
+-- | One clause of a top-level definition. Term arguments to constructors are:
+--
+-- 1. The whole application (missing for PClauseR and PWithR because they're within a "with" clause)
+--
+-- 2. The list of patterns
+--
+-- 3. The right-hand side
+--
+-- 4. The where block (PDecl' t)
+data PClause' t = PClause  FC Name t [t] t [PDecl' t] -- ^ A normal top-level definition.
                 | PWith    FC Name t [t] t [PDecl' t]
                 | PClauseR FC        [t] t [PDecl' t]
                 | PWithR   FC        [t] t [PDecl' t]
@@ -374,12 +394,19 @@ declared (PFix _ _ _) = []
 declared (PTy _ _ _ _ n t) = [n]
 declared (PPostulate _ _ _ _ n t) = [n]
 declared (PClauses _ _ n _) = [] -- not a declaration
-declared (PRecord _ _ _ n _ _ c _) = [n, c]
+declared (PCAF _ n _) = [n]
 declared (PData _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
    where fstt (_, a, _, _) = a
+declared (PData _ _ _ _ (PLaterdecl n _)) = [n]
 declared (PParams _ _ ds) = concatMap declared ds
-declared (PMutual _ ds) = concatMap declared ds
 declared (PNamespace _ ds) = concatMap declared ds
+declared (PRecord _ _ _ n _ _ c _) = [n, c]
+declared (PClass _ _ _ _ n _ ms) = n : concatMap declared ms
+declared (PInstance _ _ _ _ _ _ _ _) = []
+declared (PDSL n _) = [n]
+declared (PSyntax _ _) = []
+declared (PMutual _ ds) = concatMap declared ds
+declared (PDirective _) = []
 
 -- get the names declared, not counting nested parameter blocks
 tldeclared :: PDecl -> [Name]
@@ -393,20 +420,27 @@ tldeclared (PData _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
 tldeclared (PParams _ _ ds) = [] 
 tldeclared (PMutual _ ds) = concatMap tldeclared ds
 tldeclared (PNamespace _ ds) = concatMap tldeclared ds
--- declared (PImport _) = []
+
 
 defined :: PDecl -> [Name]
 defined (PFix _ _ _) = []
 defined (PTy _ _ _ _ n t) = []
 defined (PPostulate _ _ _ _ n t) = []
 defined (PClauses _ _ n _) = [n] -- not a declaration
-defined (PRecord _ _ _ n _ _ c _) = [n, c]
+defined (PCAF _ n _) = [n]
 defined (PData _ _ _ _ (PDatadecl n _ ts)) = n : map fstt ts
    where fstt (_, a, _, _) = a
+defined (PData _ _ _ _ (PLaterdecl n _)) = []
 defined (PParams _ _ ds) = concatMap defined ds
-defined (PMutual _ ds) = concatMap defined ds
 defined (PNamespace _ ds) = concatMap defined ds
--- declared (PImport _) = []
+defined (PRecord _ _ _ n _ _ c _) = [n, c]
+defined (PClass _ _ _ _ n _ ms) = n : concatMap defined ms
+defined (PInstance _ _ _ _ _ _ _ _) = []
+defined (PDSL n _) = [n]
+defined (PSyntax _ _) = []
+defined (PMutual _ ds) = concatMap defined ds
+defined (PDirective _) = []
+--defined _ = []
 
 updateN :: [(Name, Name)] -> Name -> Name
 updateN ns n | Just n' <- lookup n ns = n'
@@ -496,7 +530,9 @@ data PTactic' t = Intro [Name] | Intros | Focus Name
                 | ProofState | ProofTerm | Undo
                 | Try (PTactic' t) (PTactic' t)
                 | TSeq (PTactic' t) (PTactic' t)
-                | ReflectTac t -- see Language.Reflection module
+                | ApplyTactic t -- see Language.Reflection module
+                | Reflect t
+                | Fill t
                 | GoalType String (PTactic' t)
                 | Qed | Abandon
     deriving (Show, Eq, Functor)
@@ -521,6 +557,9 @@ instance Sized a => Sized (PTactic' a) where
   size Undo = 1
   size (Try l r) = 1 + size l + size r
   size (TSeq l r) = 1 + size l + size r
+  size (ApplyTactic t) = 1 + size t
+  size (Reflect t) = 1 + size t
+  size (Fill t) = 1 + size t
   size Qed = 1
   size Abandon = 1
 
@@ -941,7 +980,7 @@ prettyImp impl = prettySe 10
 showImp :: Bool -> PTerm -> String
 showImp impl tm = se 10 tm where
     se p (PQuote r) = "![" ++ show r ++ "]"
-    se p (PPatvar fc n) = show n
+    se p (PPatvar fc n) = if impl then show n ++ "[p]" else show n
     se p (PInferRef fc n) = "!" ++ show n -- ++ "[" ++ show fc ++ "]"
     se p (PRef fc n) = if impl then show n -- ++ "[" ++ show fc ++ "]"
                                else showbasic n
@@ -976,6 +1015,9 @@ showImp impl tm = se 10 tm where
         = bracket p 2 $ se 10 ty ++ " => " ++ se 10 sc
     se p (PPi (TacImp _ _ s _) n ty sc)
         = bracket p 2 $ "{tacimp " ++ show n ++ " : " ++ se 10 ty ++ "} -> " ++ se 10 sc
+    se p e
+        | Just str <- slist p e = str
+        | Just num <- snat p e  = show num
     se p (PApp _ (PRef _ f) [])
         | not impl = show f
     se p (PApp _ (PRef _ op@(UN (f:_))) args)
@@ -1013,6 +1055,37 @@ showImp impl tm = se 10 tm where
     se p (PElabError s) = show s
     se p (PCoerced t) = se p t
 --     se p x = "Not implemented"
+
+    slist' p (PApp _ (PRef _ nil) _)
+      | nsroot nil == UN "Nil" = Just []
+    slist' p (PApp _ (PRef _ cons) args)
+      | nsroot cons == UN "::",
+        (PExp {getTm=tl}):(PExp {getTm=hd}):imps <- reverse args,
+        all isImp imps,
+        Just tl' <- slist' p tl
+      = Just (hd:tl')
+      where
+        isImp (PImp {}) = True
+        isImp _         = False
+    slist' _ _ = Nothing
+
+    slist p e | Just es <- slist' p e = Just $
+      case es of []  -> "[]"
+                 [x] -> "[" ++ se p x ++ "]"
+                 xs  -> "[" ++ intercalate "," (map (se p) xs) ++ "]"
+    slist _ _ = Nothing
+
+    -- since Prelude is always imported, S & O are unqualified iff they're the
+    -- Nat ones.
+    snat p (PRef _ o)
+      | show o == (natns++"O") || show o == "O" = Just 0
+    snat p (PApp _ s [PExp {getTm=n}])
+      | show s == (natns++"S") || show s == "S",
+        Just n' <- snat p n
+      = Just $ 1 + n'
+    snat _ _ = Nothing
+
+    natns = "Prelude.Nat."
 
     sArg (PImp _ _ n tm _) = siArg (n, tm)
     sArg (PExp _ _ tm _) = seArg tm
@@ -1090,7 +1163,7 @@ namesIn uvars ist tm = nub $ ni [] tm
   where
     ni env (PRef _ n)        
         | not (n `elem` env) 
-            = case lookupTy Nothing n (tt_ctxt ist) of
+            = case lookupTy n (tt_ctxt ist) of
                 [] -> [n]
                 _ -> if n `elem` (map fst uvars) then [n] else []
     ni env (PApp _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)
@@ -1114,7 +1187,7 @@ usedNamesIn vars ist tm = nub $ ni [] tm
   where
     ni env (PRef _ n)        
         | n `elem` vars && not (n `elem` env) 
-            = case lookupTy Nothing n (tt_ctxt ist) of
+            = case lookupTy n (tt_ctxt ist) of
                 [] -> [n]
                 _ -> []
     ni env (PApp _ f as)   = ni env f ++ concatMap (ni env) (map getTm as)

@@ -31,8 +31,11 @@ mvn verbosity = P.runProgramInvocation verbosity . P.simpleProgramInvocation "mv
 (<//>) = (Px.</>)
 idrisCmd local = Px.joinPath $ splitDirectories $
                  ".." <//> buildDir local <//> "idris" <//> "idris"
+rtsDir local = Px.joinPath $ splitDirectories $
+               ".." <//> buildDir local <//> "rts" <//> "libidris_rts"
 #else
 idrisCmd local = ".." </>  buildDir local </>  "idris" </>  "idris"
+rtsDir local = ".." </> buildDir local </> "rts" </> "libidris_rts"
 #endif
 
 cleanStdLib verbosity
@@ -47,7 +50,7 @@ cleanJavaLib verbosity
        execPomExists <- doesFileExist ("java" </> "executable_pom.xml")
        when pomExists $ removeFile ("java" </> "executable_pom.xml")
 
-installStdLib pkg local verbosity copy
+installStdLib pkg local withoutEffects verbosity copy
     = do let dirs = L.absoluteInstallDirs pkg local copy
          let idir = datadir dirs
          let icmd = idrisCmd local
@@ -57,11 +60,12 @@ installStdLib pkg local verbosity copy
                , "TARGET=" ++ idir
                , "IDRIS=" ++ icmd
                ]
-         make verbosity
-               [ "-C", "effects", "install"
-               , "TARGET=" ++ idir
-               , "IDRIS=" ++ icmd
-               ]
+         unless withoutEffects $
+           make verbosity
+                 [ "-C", "effects", "install"
+                 , "TARGET=" ++ idir
+                 , "IDRIS=" ++ icmd
+                 ]
          let idirRts = idir </> "rts"
          putStrLn $ "Installing run time system in " ++ idirRts
          make verbosity
@@ -103,14 +107,15 @@ removeLibIdris local verbosity
                , "IDRIS=" ++ icmd
                ]
 
-checkStdLib local verbosity
+checkStdLib local withoutEffects verbosity
     = do let icmd = idrisCmd local
          putStrLn $ "Building libraries..."
          make verbosity
                [ "-C", "lib", "check"
                , "IDRIS=" ++ icmd
                ]
-         make verbosity
+         unless withoutEffects $
+           make verbosity
                [ "-C", "effects", "check"
                , "IDRIS=" ++ icmd
                ]
@@ -133,6 +138,12 @@ javaFlag flags =
 
 llvmFlag flags = fromMaybe False (lookup (FlagName "llvm") (S.configConfigurationsFlags flags))
 
+noEffectsFlag flags =
+   case lookup (FlagName "noeffects") (S.configConfigurationsFlags flags) of
+      Just True -> True
+      Just False -> False
+      Nothing -> False
+
 preparePoms version
     = do pomTemplate <- TIO.readFile ("java" </> "pom_template.xml")
          TIO.writeFile ("java" </> "pom.xml") (insertVersion pomTemplate)
@@ -149,11 +160,13 @@ main = do
         { postCopy = \ _ flags pkg lbi -> do
               let verb = S.fromFlag $ S.copyVerbosity flags
                   dest = S.fromFlag $ S.copyDest flags
-              installStdLib pkg lbi verb dest
+                  withoutEffects = noEffectsFlag $ configFlags lbi
+              installStdLib pkg lbi withoutEffects verb dest
               when (llvmFlag $ configFlags lbi) (installLLVMRTS pkg lbi dest)
         , postInst = \ _ flags pkg lbi -> do
               let verb = (S.fromFlag $ S.installVerbosity flags)
-              installStdLib pkg lbi verb
+              let withoutEffects = noEffectsFlag $ configFlags lbi
+              installStdLib pkg lbi withoutEffects verb
                                     NoCopyDest
               when (javaFlag $ configFlags lbi) 
                    (installJavaLib pkg 
@@ -173,7 +186,8 @@ main = do
               cleanJavaLib verb
         , postBuild = \ _ flags _ lbi -> do
               let verb = S.fromFlag $ S.buildVerbosity flags
-              checkStdLib lbi verb
+                  withoutEffects = noEffectsFlag $ configFlags lbi
+              checkStdLib lbi withoutEffects verb
               when (llvmFlag $ configFlags lbi) (buildLLVMRTS verb)
               when (javaFlag $ configFlags lbi) (checkJavaLib verb)
         }

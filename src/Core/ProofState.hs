@@ -162,7 +162,7 @@ unify' ctxt env topx topy =
 -- --              " in " ++ show env ++ 
 --              "\n" ++ show u ++ "\n" ++ qshow fails ++ "\nCurrent problems:\n"
 --              ++ qshow (problems ps) ++ "\n" ++ show (holes ps) ++ "\n"
--- --              ++ show (pterm ps) 
+--              ++ show (pterm ps) 
 --              ++ "\n----------") $
       case fails of
 --            [] -> return u
@@ -358,9 +358,8 @@ exact _ _ _ _ = fail "Can't fill here."
 -- As exact, but attempts to solve other goals by unification
 
 fill :: Raw -> RunTactic
-fill guess ctxt env (Bind x (Hole ty) sc) =
+fill guess ctxt env (Bind x (Hole ty) sc) = 
     do (val, valty) <- lift $ check ctxt env guess
-       s <- get
 --        let valtyn = normalise ctxt env valty
 --        let tyn = normalise ctxt env ty
        ns <- unify' ctxt env valty ty
@@ -423,7 +422,7 @@ introTy ty mn ctxt env (Bind x (Hole t) (P _ x' _)) | x == x' =
                                      let (uh, uns) = unified ps
 --                                      put (ps { unified = (uh, uns ++ ns) })
                                      return $ Bind n (Lam tyv) (Bind x (Hole t') (P Bound x t'))
-           _ -> fail "Nothing to introduce"
+           _ -> lift $ tfail $ CantIntroduce t'
 introTy ty n ctxt env _ = fail "Can't introduce here."
 
 intro :: Maybe Name -> RunTactic
@@ -438,7 +437,7 @@ intro mn ctxt env (Bind x (Hole t) (P _ x' _)) | x == x' =
            Bind y (Pi s) t -> -- trace ("in type " ++ show t') $
                let t' = instantiate (P Bound n s) (pToV y t) in 
                    return $ Bind n (Lam s) (Bind x (Hole t') (P Bound x t'))
-           _ -> fail "Nothing to introduce"
+           _ -> lift $ tfail $ CantIntroduce t'
 intro n ctxt env _ = fail "Can't introduce here."
 
 forall :: Name -> Raw -> RunTactic

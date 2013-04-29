@@ -59,19 +59,19 @@ rebuildEnv xs        (Drop rest) (y :: env) = y :: rebuildEnv xs rest env
 ---- The Effect EDSL itself ----
 
 -- some proof automation
-findEffElem : Nat -> Tactic -- Nat is maximum search depth
-findEffElem O = Refine "Here" `Seq` Solve 
-findEffElem (S n) = GoalType "EffElem" 
+findEffElem : Nat -> List (TTName, Binder TT) -> TT -> Tactic -- Nat is maximum search depth
+findEffElem O ctxt goal = Refine "Here" `Seq` Solve 
+findEffElem (S n) ctxt goal = GoalType "EffElem" 
           (Try (Refine "Here" `Seq` Solve)
-               (Refine "There" `Seq` (Solve `Seq` findEffElem n)))
+               (Refine "There" `Seq` (Solve `Seq` findEffElem n ctxt goal)))
 
-findSubList : Nat -> Tactic
-findSubList O = Refine "SubNil" `Seq` Solve
-findSubList (S n)
+findSubList : Nat -> List (TTName, Binder TT) -> TT -> Tactic
+findSubList O ctxt goal = Refine "SubNil" `Seq` Solve
+findSubList (S n) ctxt goal
    = GoalType "SubList" 
          (Try (Refine "subListId" `Seq` Solve)
          ((Try (Refine "Keep" `Seq` Solve)
-               (Refine "Drop" `Seq` Solve)) `Seq` findSubList n))
+               (Refine "Drop" `Seq` Solve)) `Seq` findSubList n ctxt goal))
 
 updateResTy : (xs : List EFFECT) -> EffElem e a xs -> e a b t -> 
               List EFFECT
@@ -116,14 +116,14 @@ data EffM : (m : Type -> Type) ->
 --   Eff : List (EFFECT m) -> Type -> Type
 
 implicit
-lift' : {default tactics { reflect findSubList 10; solve; }
+lift' : {default tactics { applyTactic findSubList 100; solve; }
            prf : SubList ys xs} ->
         EffM m ys ys' t -> EffM m xs (updateWith ys' xs prf) t
 lift' {prf} e = lift prf e
 
 implicit
 effect' : {a, b: _} -> {e : Effect} ->
-          {default tactics { reflect findEffElem 10; solve; } 
+          {default tactics { applyTactic findEffElem 100; solve; } 
              prf : EffElem e a xs} -> 
           (eff : e a b t) -> 
          EffM m xs (updateResTy xs prf eff) t
@@ -175,8 +175,12 @@ eff env (new r prog) k
 eff env (catch prog handler) k
    = catch (eff env prog k)
            (\e => eff env (handler e) k)
+-- FIXME:
+-- xs is needed explicitly because otherwise the pattern binding for
+-- 'l' appears too late. Solution seems to be to reorder patterns at the
+-- end so that everything is in scope when it needs to be.
 eff {xs = [l ::: x]} env (l :- prog) k
-   = let env' = unlabel {l} env in
+   = let env' = unlabel env in
          eff env' prog (\envk, p' => k (relabel l envk) p')
 
 run : Applicative m => Env m xs -> EffM m xs xs' a -> m a

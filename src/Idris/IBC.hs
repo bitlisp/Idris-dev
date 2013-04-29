@@ -18,10 +18,12 @@ import Control.Monad.State hiding (get, put)
 import System.FilePath
 import System.Directory
 
+import Debug.Trace
+
 import Paths_idris
 
 ibcVersion :: Word8
-ibcVersion = 27
+ibcVersion = 29
 
 data IBCFile = IBCFile { ver :: Word8,
                          sourcefile :: FilePath,
@@ -38,6 +40,7 @@ data IBCFile = IBCFile { ver :: Word8,
                          ibc_keywords :: [String],
                          ibc_objs :: [FilePath],
                          ibc_libs :: [String],
+                         ibc_dynamic_libs :: [String],
                          ibc_hdrs :: [String],
                          ibc_access :: [(Name, Accessibility)],
                          ibc_total :: [(Name, Totality)],
@@ -47,12 +50,13 @@ data IBCFile = IBCFile { ver :: Word8,
                          ibc_docstrings :: [(Name, String)],
                          ibc_coercions :: [Name]
                        }
+   deriving Show
 {-! 
 deriving instance Binary IBCFile 
 !-}
 
 initIBC :: IBCFile
-initIBC = IBCFile ibcVersion "" [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] []
+initIBC = IBCFile ibcVersion "" [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] []
 
 loadIBC :: FilePath -> Idris ()
 loadIBC fp = do iLOG $ "Loading ibc " ++ fp
@@ -81,28 +85,28 @@ mkIBC (i:is) f = do ist <- getIState
                     mkIBC is f'
 
 ibc i (IBCFix d) f = return f { ibc_fixes = d : ibc_fixes f } 
-ibc i (IBCImp n) f = case lookupCtxt Nothing n (idris_implicits i) of
+ibc i (IBCImp n) f = case lookupCtxt n (idris_implicits i) of
                         [v] -> return f { ibc_implicits = (n,v): ibc_implicits f     }
                         _ -> fail "IBC write failed"
 ibc i (IBCStatic n) f 
-                   = case lookupCtxt Nothing n (idris_statics i) of
+                   = case lookupCtxt n (idris_statics i) of
                         [v] -> return f { ibc_statics = (n,v): ibc_statics f     }
                         _ -> fail "IBC write failed"
 ibc i (IBCClass n) f 
-                   = case lookupCtxt Nothing n (idris_classes i) of
+                   = case lookupCtxt n (idris_classes i) of
                         [v] -> return f { ibc_classes = (n,v): ibc_classes f     }
                         _ -> fail "IBC write failed"
 ibc i (IBCInstance int n ins) f 
                    = return f { ibc_instances = (int,n,ins): ibc_instances f     }
 ibc i (IBCDSL n) f 
-                   = case lookupCtxt Nothing n (idris_dsls i) of
+                   = case lookupCtxt n (idris_dsls i) of
                         [v] -> return f { ibc_dsls = (n,v): ibc_dsls f     }
                         _ -> fail "IBC write failed"
 ibc i (IBCData n) f 
-                   = case lookupCtxt Nothing n (idris_datatypes i) of
+                   = case lookupCtxt n (idris_datatypes i) of
                         [v] -> return f { ibc_datatypes = (n,v): ibc_datatypes f     }
                         _ -> fail "IBC write failed"
-ibc i (IBCOpt n) f = case lookupCtxt Nothing n (idris_optimisation i) of
+ibc i (IBCOpt n) f = case lookupCtxt n (idris_optimisation i) of
                         [v] -> return f { ibc_optimise = (n,v): ibc_optimise f     }
                         _ -> fail "IBC write failed"
 ibc i (IBCSyntax n) f = return f { ibc_syntax = n : ibc_syntax f }
@@ -110,14 +114,15 @@ ibc i (IBCKeyword n) f = return f { ibc_keywords = n : ibc_keywords f }
 ibc i (IBCImport n) f = return f { ibc_imports = n : ibc_imports f }
 ibc i (IBCObj n) f = return f { ibc_objs = n : ibc_objs f }
 ibc i (IBCLib n) f = return f { ibc_libs = n : ibc_libs f }
+ibc i (IBCDyLib n) f = return f {ibc_dynamic_libs = n : ibc_dynamic_libs f }
 ibc i (IBCHeader n) f = return f { ibc_hdrs = n : ibc_hdrs f }
-ibc i (IBCDef n) f = case lookupDef Nothing n (tt_ctxt i) of
+ibc i (IBCDef n) f = case lookupDef n (tt_ctxt i) of
                         [v] -> return f { ibc_defs = (n,v) : ibc_defs f     }
                         _ -> fail "IBC write failed"
-ibc i (IBCDoc n) f = case lookupCtxt Nothing n (idris_docstrings i) of
+ibc i (IBCDoc n) f = case lookupCtxt n (idris_docstrings i) of
                         [v] -> return f { ibc_docstrings = (n,v) : ibc_docstrings f }
                         _ -> fail "IBC write failed"
-ibc i (IBCCG n) f = case lookupCtxt Nothing n (idris_callgraph i) of
+ibc i (IBCCG n) f = case lookupCtxt n (idris_callgraph i) of
                         [v] -> return f { ibc_cg = (n,v) : ibc_cg f     }
                         _ -> fail "IBC write failed"
 ibc i (IBCCoercion n) f = return f { ibc_coercions = n : ibc_coercions f }
@@ -147,6 +152,7 @@ process i fn
                pKeywords (ibc_keywords i)
                pObjs (ibc_objs i)
                pLibs (ibc_libs i)
+               pDyLibs (ibc_dynamic_libs i)
                pHdrs (ibc_hdrs i)
                pDefs (ibc_defs i)
                pAccess (ibc_access i)
@@ -242,6 +248,13 @@ pObjs os = mapM_ addObjectFile os
 pLibs :: [String] -> Idris ()
 pLibs ls = mapM_ addLib ls
 
+pDyLibs :: [String] -> Idris ()
+pDyLibs ls = do res <- mapM (addDyLib . return) ls
+                mapM_ checkLoad res
+                return ()
+    where checkLoad (Left _) = return ()
+          checkLoad (Right err) = fail err
+
 pHdrs :: [String] -> Idris ()
 pHdrs hs = mapM_ addHdr hs
 
@@ -321,16 +334,21 @@ instance Binary FC where
  
 instance Binary Name where
         put x
-          = case x of
-                UN x1 -> do putWord8 0
-                            put x1
-                NS x1 x2 -> do putWord8 1
+          = {-# SCC "putName" #-}
+            case x of
+                UN x1 -> {-# SCC "putUN" #-}
+                         do putWord8 0
+                            {-# SCC "putNString" #-} put x1
+                NS x1 x2 -> {-# SCC "putNS" #-}
+                            do putWord8 1
                                put x1
                                put x2
-                MN x1 x2 -> do putWord8 2
+                MN x1 x2 -> {-# SCC "putMN" #-}
+                            do putWord8 2
                                put x1
                                put x2
-                NErased -> putWord8 3
+                NErased -> {-# SCC "putNErased" #-}
+                         putWord8 3
         get
           = do i <- getWord8
                case i of
@@ -522,9 +540,10 @@ instance Binary NameType where
                    _ -> error "Corrupted binary data for NameType"
 
 
-instance (Binary n) => Binary (TT n) where
+instance {-(Binary n) =>-} Binary (TT Name) where
         put x
-          = case x of
+          = {-# SCC "putTT" #-} 
+            case x of
                 P x1 x2 x3 -> do putWord8 0
                                  put x1
                                  put x2
@@ -607,7 +626,8 @@ instance Binary SC where
  
 instance Binary CaseAlt where
         put x
-          = case x of
+          = {-# SCC "putCaseAlt" #-} 
+            case x of
                 ConCase x1 x2 x3 x4 -> do putWord8 0
                                           put x1
                                           put x2
@@ -636,17 +656,16 @@ instance Binary CaseAlt where
  
 instance Binary Def where
         put x
-          = case x of
+          = {-# SCC "putDef" #-} 
+            case x of
                 Function x1 x2 -> do putWord8 0
                                      put x1
                                      put x2
                 TyDecl x1 x2 -> do putWord8 1
                                    put x1
                                    put x2
-                Operator x1 x2 x3 -> do putWord8 2
-                                        put x1
-                                        put x2
-                                        put x3
+                -- all primitives just get added at the start, don't write
+                Operator x1 x2 x3 -> do return ()
                 CaseOp x1 x2 x3 x3a x4 x5 x6 x7 x8 -> 
                                                do putWord8 3
                                                   put x1
@@ -744,8 +763,9 @@ instance Binary Totality where
                    _ -> error "Corrupted binary data for Totality"
 
 instance Binary IBCFile where
-        put (IBCFile x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19 x20 x21 x22 x23)
-          = do put x1
+        put x@(IBCFile x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19 x20 x21 x22 x23 x24)
+         = {-# SCC "putIBCFile" #-} 
+            do put x1
                put x2
                put x3
                put x4
@@ -768,6 +788,7 @@ instance Binary IBCFile where
                put x21
                put x22
                put x23
+               put x24
         get
           = do x1 <- get
                if x1 == ibcVersion then 
@@ -793,7 +814,8 @@ instance Binary IBCFile where
                     x21 <- get
                     x22 <- get
                     x23 <- get
-                    return (IBCFile x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19 x20 x21 x22 x23)
+                    x24 <- get
+                    return (IBCFile x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18 x19 x20 x21 x22 x23 x24)
                   else return (initIBC { ver = x1 })
  
 instance Binary FnOpt where
@@ -1382,8 +1404,12 @@ instance (Binary t) => Binary (PTactic' t) where
                                  put x1
                                  put x2
                 Qed -> putWord8 15
-                ReflectTac x1 -> do putWord8 16
-                                    put x1
+                ApplyTactic x1 -> do putWord8 16
+                                     put x1
+                Reflect x1 -> do putWord8 17
+                                 put x1
+                Fill x1 -> do putWord8 18
+                              put x1                
         get
           = do i <- getWord8
                case i of
@@ -1416,7 +1442,11 @@ instance (Binary t) => Binary (PTactic' t) where
                             return (TSeq x1 x2)
                    15 -> return Qed
                    16 -> do x1 <- get
-                            return (ReflectTac x1)
+                            return (ApplyTactic x1)
+                   17 -> do x1 <- get
+                            return (Reflect x1)
+                   18 -> do x1 <- get
+                            return (Fill x1)
                    _ -> error "Corrupted binary data for PTactic'"
 
 

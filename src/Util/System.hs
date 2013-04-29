@@ -1,6 +1,6 @@
 module Util.System(tempfile,withTempdir,environment,getCC,
                    getLibFlags,getIdrisLibDir,getIncFlags,rmFile,
-                   getMvn,getExecutablePom) where
+                   getMvn,getExecutablePom,catchIO) where
 
 -- System helper functions.
 import Control.Monad (when)
