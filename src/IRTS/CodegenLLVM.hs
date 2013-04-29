@@ -27,6 +27,7 @@ import Debug.Trace
 opt :: String
 opt = "-O3"
 
+-- TODO: Perform optimization and assembly writing internally
 codegenLLVM :: [(Name, SDecl)] ->
                String -> -- output file name
                OutputType ->
@@ -502,7 +503,7 @@ compileConst c
     | elem c [ IType, BIType, FlType, ChType, StrType
              , B8Type, B16Type, B32Type, B64Type
              , PtrType, VoidType, Forgot
-             ] = getUndefVal
+             ] = getUnit -- Could be undef, except might get EVALed
     | otherwise = compileConstUnboxed c >>= boxVal
 
 compileConstUnboxed :: Const -> ICG c s (STValue c s)
