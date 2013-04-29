@@ -595,7 +595,7 @@ unbox FInt  v = intType 32 >>= unbox' v
 unbox FChar v = intType 32 >>= unbox' v
 unbox FString v = intType 8 >>= pointerType >>= unbox' v
 unbox FPtr    v = intType 8 >>= pointerType >>= unbox' v
-unbox FDouble v = intType 8 >>= pointerType >>= unbox' v
+unbox FDouble v = doubleType >>= unbox' v
 unbox FUnit v = return v
 
 unbox' v ty = do
