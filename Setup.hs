@@ -93,7 +93,9 @@ llvmRTSPath = "llvm" </> "rts-" ++ arch
 
 installLLVMRTS pkg local copy = do
   putStrLn $ "Installing LLVM RTS for " ++ arch ++ "..."
-  copyFile (llvmRTSPath ++ ".bc") ((datadir $ L.absoluteInstallDirs pkg local copy) </> llvmRTSPath ++ ".bc")
+  let dir = datadir $ L.absoluteInstallDirs pkg local copy
+  createDirectoryIfMissing False (dir </> "llvm")
+  copyFile (llvmRTSPath ++ ".bc") (dir </> llvmRTSPath ++ ".bc")
 
 -- This is a hack. I don't know how to tell cabal that a data file needs
 -- installing but shouldn't be in the distribution. And it won't make the
