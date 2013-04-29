@@ -1,4 +1,3 @@
-{-# LANGUAGE RecordWildCards #-}
 module IRTS.CodegenLLVM (codegenLLVM) where
 
 import IRTS.Bytecode
