@@ -4,6 +4,8 @@ import IRTS.Bytecode
 import IRTS.Lang ( FType(..)
                  , PrimFn(..)
                  , LVar(..)
+                 , IntTy(..)
+                 , intTyWidth
                  )
 import IRTS.Simplified
 import IRTS.CodegenCommon
@@ -366,7 +368,8 @@ compile expr = do
     --               ++ "Module so far:\n" ++ m
 
 ftyToNative :: (Monad (m c s), MonadLLVM m) => FType -> m c s (STType c s)
-ftyToNative FInt    = intType 32
+ftyToNative (FInt ITNative) = ftyToNative (FInt IT32)
+ftyToNative (FInt ity) = intType (fromIntegral $ intTyWidth ity)
 ftyToNative FChar   = intType 32
 ftyToNative FString = intType 8 >>= pointerType
 ftyToNative FPtr    = intType 8 >>= pointerType
@@ -389,21 +392,21 @@ ensureForeign name returnTy argTys = do
 compilePrim :: PrimFn -> [STValue c s] -> ICG c s (STValue c s)
 compilePrim x args =
     case (x, args) of
-      (LPlus,  [x,y]) -> bin FInt buildAdd x y
-      (LMinus, [x,y]) -> bin FInt buildSub x y
-      (LTimes, [x,y]) -> bin FInt buildMul x y
-      (LAnd,   [x,y]) -> bin FInt buildAnd x y
-      (LSHL,   [x,y]) -> bin FInt buildShl x y
-      (LMod,   [x,y]) -> bin FInt buildSRem x y
-      (LEq, [x,y]) -> icmp FInt IntEQ x y
-      (LLt, [x,y]) -> icmp FInt IntSLT x y
-      (LLe, [x,y]) -> icmp FInt IntSLE x y
-      (LGt, [x,y]) -> icmp FInt IntSGT x y
-      (LGe, [x,y]) -> icmp FInt IntSGE x y
+      (LPlus ty,  [x,y]) -> bin (FInt ty) buildAdd x y
+      (LMinus ty, [x,y]) -> bin (FInt ty) buildSub x y
+      (LTimes ty, [x,y]) -> bin (FInt ty) buildMul x y
+      (LAnd ty,   [x,y]) -> bin (FInt ty) buildAnd x y
+      (LSHL ty,   [x,y]) -> bin (FInt ty) buildShl x y
+      (LSRem ty,   [x,y]) -> bin (FInt ty) buildSRem x y
+      (LEq ty, [x,y]) -> icmp (FInt ty) IntEQ x y
+      (LLt ty, [x,y]) -> icmp (FInt ty) IntSLT x y
+      (LLe ty, [x,y]) -> icmp (FInt ty) IntSLE x y
+      (LGt ty, [x,y]) -> icmp (FInt ty) IntSGT x y
+      (LGe ty, [x,y]) -> icmp (FInt ty) IntSGE x y
       (LIntCh, [x]) -> return x
       (LChInt, [x]) -> return x
       (LIntBig, [x]) -> do
-                     i <- unbox FInt x
+                     i <- unbox (FInt ITNative) x
                      i' <- buildSExt "" i =<< intType 64
                      f <- getPrim "__gmpz_init_set_si"
                      mpz <- getPrimTy "mpz"
@@ -445,7 +448,7 @@ compilePrim x args =
       (LFTimes, [x,y]) -> bin FDouble buildFMul x y
       (LFDiv, [x,y]) -> bin FDouble buildFDiv x y
       (LStrConcat, [x, y]) -> callPrim "strConcat" [(FString, x), (FString, y)]
-      (LIntStr, [x]) -> callPrim "intStr" [(FInt, x)]
+      (LIntStr, [x]) -> callPrim "intStr" [(FInt ITNative, x)]
       (LStrInt, [x]) -> callPrim "strInt" [(FString, x)]
       (LStrEq, [x, y]) -> callPrim "strEq" [(FString, x), (FString, y)]
       (LStrCons, [x, y]) -> callPrim "strCons" [(FChar, x), (FString, y)]
@@ -488,7 +491,7 @@ compilePrim x args =
         ord <- buildCall "" f [l', r']
         i32 <- intType 32
         zero <- constInt i32 0 True
-        icmp FInt pred ord zero
+        icmp (FInt ITNative) pred ord zero
 
 buildMPZ :: ICG c s (STValue c s)
 buildMPZ  = do
@@ -591,7 +594,8 @@ boxVal val = do
             buildPointerCast "" box valTy
 
 unbox :: FType -> STValue c s -> ICG c s (STValue c s)
-unbox FInt  v = intType 32 >>= unbox' v
+unbox (FInt ITNative) v = unbox (FInt IT32) v
+unbox (FInt ity) v = intType (fromIntegral $ intTyWidth ity) >>= unbox' v
 unbox FChar v = intType 32 >>= unbox' v
 unbox FString v = intType 8 >>= pointerType >>= unbox' v
 unbox FPtr    v = intType 8 >>= pointerType >>= unbox' v
