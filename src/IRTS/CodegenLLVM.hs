@@ -37,7 +37,7 @@ codegenLLVM defs out exec = do
   let mod = run ctx (codegen rtsBuf defs)
   case verifyModule mod of
     Just err -> ierror $ "Generated invalid module:\n" ++ show mod ++ "\n\n" ++ err
-    Nothing -> do
+    Nothing ->
       case exec of
         Raw -> writeBC mod out
         Object -> buildObj mod out
@@ -136,7 +136,7 @@ findVar (Glob name) = do
     Nothing -> ierror $ "Undefined global: " ++ show name
 findVar (Loc level) = do
   st <- MkICG get
-  return $ (cgLocals st) !! ((cgDepth st - 1) - level)
+  return $ cgLocals st !! ((cgDepth st - 1) - level)
 
 updateVar :: LVar -> STValue c s -> ICG c s ()
 updateVar (Loc level) value = do
@@ -290,8 +290,8 @@ compile expr = do
     SCon tag name args -> mkCon tag =<< mapM findVar args
     SCase var alts ->
         do ctor <- findVar var
-           let constAlts = filter (\a -> case a of { SConstCase _ _     -> True; _ -> False; }) alts
-               conAlts   = filter (\a -> case a of { SConCase _ _ _ _ _ -> True; _ -> False; }) alts
+           let constAlts = filter (\a -> case a of { SConstCase {} -> True; _ -> False; }) alts
+               conAlts   = filter (\a -> case a of { SConCase   {} -> True; _ -> False; }) alts
                defaultAction =
                    case find (\a -> case a of { SDefaultCase _ -> True; _ -> False; }) alts of
                      Just (SDefaultCase expr) -> compile expr
@@ -369,7 +369,7 @@ ftyToNative FPtr    = intType 8 >>= pointerType
 ftyToNative FAny    = intType 8 >>= pointerType -- TODO: Verify correctness
 ftyToNative FDouble = doubleType
 ftyToNative FUnit   = voidType
-ftyToNative x       = ierror $ "Unimplemented foreign type: " ++ show x
+--ftyToNative x       = ierror $ "Unimplemented foreign type: " ++ show x
 
 ensureForeign :: String -> FType -> [FType] -> ModuleGen c s (STValue c s)
 ensureForeign name returnTy argTys = do
