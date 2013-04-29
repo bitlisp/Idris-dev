@@ -55,7 +55,7 @@ define internal void @gmp_free(i8* %ptr, i64 %size) {
   ret void
 }
 
-define i8* @readStr(i8* nocapture %h) nounwind {
+define internal fastcc i8* @readStr(i8* nocapture %h) nounwind {
   %1 = tail call noalias i8* @GC_malloc_atomic(i64 256) nounwind
   %2 = getelementptr inbounds i8* %1, i64 255
   store i8 1, i8* %2, align 1
@@ -99,7 +99,7 @@ define void @putStr(i8* %str) nounwind {
   ret void
 }
 
-define fastcc i8* @strConcat(i8* %l, i8* %r) nounwind {
+define internal fastcc i8* @strConcat(i8* %l, i8* %r) nounwind {
   %1 = call i64 @strlen(i8* %l) nounwind readonly
   %2 = call i64 @strlen(i8* %r) nounwind readonly
   %3 = add i64 %1, 1
@@ -111,7 +111,7 @@ define fastcc i8* @strConcat(i8* %l, i8* %r) nounwind {
   ret i8* %5
 }
 
-define fastcc noalias i8* @intStr(i32 %i) nounwind {
+define internal fastcc noalias i8* @intStr(i32 %i) nounwind {
   %1 = tail call noalias i8* @GC_malloc_atomic(i64 12) nounwind
   %2 = tail call i32 (i8*, i64, i8*, ...)* @snprintf(i8* %1, i64 12, i8* getelementptr inbounds ([3 x i8]* @intfmt, i64 0, i64 0), i32 %i) nounwind
   ret i8* %1
@@ -119,20 +119,20 @@ define fastcc noalias i8* @intStr(i32 %i) nounwind {
 
 declare i64 @strtol(i8*, i8**, i32)
 
-define fastcc i32 @strInt(i8* %s) nounwind {
+define internal fastcc i32 @strInt(i8* %s) nounwind {
   %1 = tail call i64 @strtol(i8* %s, i8** null, i32 10)
   %2 = trunc i64 %1 to i32
   ret i32 %2
 }
 
-define fastcc i32 @strEq(i8* %l, i8* %r) nounwind {
+define internal fastcc i32 @strEq(i8* %l, i8* %r) nounwind {
   %1 = call i32 @strcmp(i8* %l, i8* %r) nounwind readonly
   %2 = icmp eq i32 0, %1
   %3 = zext i1 %2 to i32
   ret i32 %3
 }
 
-define fastcc i8* @strCons(i32 %c, i8* %s) nounwind {
+define internal fastcc i8* @strCons(i32 %c, i8* %s) nounwind {
   %1 = call i64 @strlen(i8* %s) nounwind readonly
   %2 = add i64 %1, 2
   %3 = call noalias i8* @GC_malloc_atomic(i64 %2) nounwind
@@ -146,13 +146,13 @@ define fastcc i8* @strCons(i32 %c, i8* %s) nounwind {
   ret i8* %3
 }
 
-define fastcc i32 @strHead(i8* %str) readonly nounwind {
+define internal fastcc i32 @strHead(i8* %str) readonly nounwind {
   %1 = load i8* %str
   %2 = zext i8 %1 to i32
   ret i32 %2
 }
 
-define fastcc i8* @strTail(i8* %str) readnone nounwind {
+define internal fastcc i8* @strTail(i8* %str) readnone nounwind {
   %1 = getelementptr inbounds i8* %str, i64 1
   ret i8* %1
 }
