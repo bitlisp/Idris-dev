@@ -15,7 +15,7 @@ import qualified Control.Monad.Trans as T
 import           Control.Monad.Trans.State
 import           Data.Char
 import           Data.Maybe (fromJust)
-import           Data.List (isPrefixOf, isSuffixOf, intercalate)
+import           Data.List (isPrefixOf, isSuffixOf, intercalate, foldl')
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import           Language.Java.Parser
@@ -255,7 +255,7 @@ mkMainMethod =
                           )
 
 mergeInnerClasses :: [Decl] -> [Decl]
-mergeInnerClasses = foldl mergeInner []
+mergeInnerClasses = foldl' mergeInner []
   where
     mergeInner ((decl@(MemberDecl (MemberClassDecl (ClassDecl priv name targs ext imp (ClassBody body))))):decls)
                decl'@(MemberDecl (MemberClassDecl (ClassDecl _ name' _ ext' imp' (ClassBody body'))))
