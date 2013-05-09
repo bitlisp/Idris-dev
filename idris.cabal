@@ -118,7 +118,7 @@ Executable     idris
                                 haskeline>=0.7, split, directory,
                                 containers, process, transformers, filepath,
                                 directory, binary, bytestring, text, pretty,
-                                language-java>=0.2.2, llvm-wrapper>3 && <4, libffi
+                                language-java>=0.2.2, llvm-base>3 && <4, libffi
 
                Extensions:      MultiParamTypeClasses, FunctionalDependencies,
                                 FlexibleInstances, TemplateHaskell
