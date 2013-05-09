@@ -271,16 +271,16 @@ void dumpVal(VAL v) {
 
 }
 
-void idris_memset(void* ptr, i_int offset, VAL c, i_int size) {
-    memset(((uint8_t*)ptr) + offset, c->info.bits8, size);
+void idris_memset(void* ptr, i_int offset, uint8_t c, i_int size) {
+    memset(((uint8_t*)ptr) + offset, c, size);
 }
 
 uint8_t idris_peek(void* ptr, i_int offset) {
     return *(((uint8_t*)ptr) + offset);
 }
 
-void idris_poke(void* ptr, i_int offset, VAL data) {
-    *(((uint8_t*)ptr) + offset) = data->info.bits8;
+void idris_poke(void* ptr, i_int offset, uint8_t data) {
+    *(((uint8_t*)ptr) + offset) = data;
 }
 
 void idris_memmove(void* dest, void* src, i_int dest_offset, i_int src_offset, i_int size) {
