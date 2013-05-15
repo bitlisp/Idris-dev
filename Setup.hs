@@ -138,8 +138,6 @@ javaFlag flags =
     Just False -> False
     Nothing -> False
 
-llvmFlag flags = fromMaybe False (lookup (FlagName "llvm") (S.configConfigurationsFlags flags))
-
 noEffectsFlag flags =
    case lookup (FlagName "noeffects") (S.configConfigurationsFlags flags) of
       Just True -> True
@@ -164,7 +162,7 @@ main = do
                   dest = S.fromFlag $ S.copyDest flags
                   withoutEffects = noEffectsFlag $ configFlags lbi
               installStdLib pkg lbi withoutEffects verb dest
-              when (llvmFlag $ configFlags lbi) (installLLVMRTS pkg lbi dest)
+              installLLVMRTS pkg lbi dest
         , postInst = \ _ flags pkg lbi -> do
               let verb = (S.fromFlag $ S.installVerbosity flags)
               let withoutEffects = noEffectsFlag $ configFlags lbi
@@ -177,7 +175,7 @@ main = do
                                    NoCopyDest 
                                    (pkgVersion . package $ localPkgDescr lbi)
                    )
-              when (llvmFlag $ configFlags lbi) (installLLVMRTS pkg lbi NoCopyDest)
+              installLLVMRTS pkg lbi NoCopyDest
         , postConf  = \ _ flags _ lbi -> do
               removeLibIdris lbi (S.fromFlag $ S.configVerbosity flags)
               when (javaFlag $ configFlags lbi) 
@@ -190,6 +188,6 @@ main = do
               let verb = S.fromFlag $ S.buildVerbosity flags
                   withoutEffects = noEffectsFlag $ configFlags lbi
               checkStdLib lbi withoutEffects verb
-              when (llvmFlag $ configFlags lbi) (buildLLVMRTS verb)
+              buildLLVMRTS verb
               when (javaFlag $ configFlags lbi) (checkJavaLib verb)
         }
