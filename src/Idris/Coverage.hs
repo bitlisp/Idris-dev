@@ -17,21 +17,6 @@ import Debug.Trace
 
 import Control.Monad.State
 
--- Generate the LHSes which are missing from a case tree
--- Eliminate the ones which cannot be well typed
-
-genMissing :: Name -> [Name] -> SC -> Idris [PTerm] 
-genMissing fn args sc 
-   = do sc' <- expandTree sc
-        logLvl 5 $ "Checking missing cases for " ++ 
-                     show fn ++ "\n" ++ (show sc')
-        (got, missing) <- gm fn (map (\x -> P Bound x Erased) args) sc'
-        return $ filter (\x -> not (x `elem` got)) missing
-
--- Make a term to feed to the pattern matcher from a LHS declared impossible
--- (we can't type check it, but we need the case analysis to check for 
--- covering...)
-
 mkPatTm :: PTerm -> Idris Term
 mkPatTm t = do i <- getIState
                let timp = addImpl' True [] [] i t
@@ -47,101 +32,6 @@ mkPatTm t = do i <- getIState
     toTT _ = do v <- get
                 put (v + 1)
                 return (P Bound (MN v "imp") Erased) 
-
-mkPTerm :: Name -> [TT Name] -> Idris PTerm
-mkPTerm f args = do i <- getIState
-                    let fapp = mkApp (P Bound f Erased) (map eraseName args)
-                    return $ delab i fapp
-  where eraseName (App f a) = App (eraseName f) (eraseName a)
-        eraseName (P _ (MN _ _) _) = Erased
-        eraseName t                = t
-
-gm :: Name -> [TT Name] -> SC -> Idris ([PTerm], [PTerm])
-gm fn args (Case n alts) = do m <- mapM (gmAlt fn args n) alts
-                              let (got, missing) = unzip m
-                              return (concat got, concat missing)
-gm fn args (STerm tm)    = do logLvl 3 ("Covered: " ++ show args)
-                              t <- mkPTerm fn args
-                              return ([t], [])
-gm fn args ImpossibleCase = do logLvl 3 ("Impossible: " ++ show args)
-                               t <- mkPTerm fn args
-                               return ([], [])
-gm fn args (UnmatchedCase _) = do logLvl 3 ("Missing: " ++ show args)
-                                  t <- mkPTerm fn args
-                                  return ([], [t])
-
-gmAlt fn args n (ConCase cn t cargs sc)
-   = do let args' = map (subst n (mkApp (P Bound cn Erased)
-                                        (map (\x -> P Bound x Erased) cargs))) 
-                        args
-        gm fn args' sc
-gmAlt fn args n (ConstCase c sc)
-   = do let args' = map (subst n (Constant c)) args
-        gm fn args' sc
-gmAlt fn args n (DefaultCase sc)
-   = do gm fn args sc
-
-getDefault (DefaultCase sc : _) = sc
-getDefault (_ : cs) = getDefault cs
-getDefault [] = UnmatchedCase ""
-
-dropDefault (DefaultCase sc : rest) = dropDefault rest
-dropDefault (c : cs) = c : dropDefault cs
-dropDefault [] = [] 
-
-expandTree :: SC -> Idris SC
-expandTree (Case n alts) = do i <- getIState
-                              as <- expandAlts i (dropDefault alts) 
-                                                 (getDefault alts)
-                              alts' <- mapM expandTreeA as
-                              return (Case n alts')
-    where expandTreeA (ConCase n i ns sc) = do sc' <- expandTree sc
-                                               return (ConCase n i ns sc')
-          expandTreeA (ConstCase i sc) = do sc' <- expandTree sc
-                                            return (ConstCase i sc')
-          expandTreeA (DefaultCase sc) = do sc' <- expandTree sc
-                                            return (DefaultCase sc')
-expandTree t = return t
-
-expandAlts :: IState -> [CaseAlt] -> SC -> Idris [CaseAlt]
-expandAlts i all@(ConstCase c _ : alts) def
-    = return $ all ++ [DefaultCase def]
-expandAlts i all@(ConCase n _ _ _ : alts) def
-    | (TyDecl c@(DCon _ arity) ty : _) <- lookupDef n (tt_ctxt i)
-         = do let tyn = getTy n (tt_ctxt i)
-              case lookupCtxt tyn (idris_datatypes i) of
-                  (TI ns _ _: _) -> do let ps = map mkPat ns
-                                       return $ addAlts ps (altsFor all) all
-                  _ -> return all
-  where
-    altsFor [] = []
-    altsFor (ConCase n _ _ _ : alts) = n : altsFor alts
-    altsFor (_ : alts) = altsFor alts
-
-    addAlts [] got alts = alts
-    addAlts ((n, arity) : ps) got alts
-        | n `elem` got = addAlts ps got alts
-        | otherwise = addAlts ps got (alts ++ 
-                             [ConCase n (-1) (argList arity) def])
-
-    argList i = take i (map (\x -> (MN x "ign")) [0..])
-
-    getTy n ctxt 
-      = case lookupTy n ctxt of
-            (t : _) -> case unApply (getRetTy t) of
-                        (P _ tyn _, _) -> tyn
-                        x -> error $ "Can't happen getTy 1 " ++ show (n, x)
-            _ -> error "Can't happen getTy 2"
-
-    mkPat x = case lookupCtxt x (idris_implicits i) of
-                    (pargs : _)
-                       -> (x, length pargs)  
-                    _ -> error "Can't happen - genAll"
-expandAlts i alts def = return alts 
-        
-
-
--- OLD STUFF: probably broken...
 
 -- Given a list of LHSs, generate a extra clauses which cover the remaining
 -- cases. The ones which haven't been provided are marked 'absurd' so that the
@@ -272,44 +162,56 @@ checkPositive n (cn, ty)
             = n /= n' && posArg sc
     posArg t = True
 
--- Totality checking - check for structural recursion 
--- (no mutual definitions yet)
-
-data LexOrder = LexXX | LexEQ | LexLT
-    deriving (Show, Eq, Ord)
-
 calcProd :: IState -> FC -> Name -> [([Name], Term, Term)] -> Idris Totality
-calcProd i fc n pats = do patsprod <- mapM prodRec pats
-                          if (and patsprod) 
-                             then return Productive
-                             else return (Partial NotProductive)
+calcProd i fc topn pats 
+    = cp topn pats []
    where
      -- every application of n must be in an argument of a coinductive 
-     -- constructor
+     -- constructor, in every function reachable from here in the
+     -- call graph.
+     cp n pats done = do patsprod <- mapM (prodRec n done) pats
+                         if (and patsprod) 
+                            then return Productive
+                            else return (Partial NotProductive)
 
-     prodRec :: ([Name], Term, Term) -> Idris Bool
-     prodRec (_, _, tm) = prod False tm 
+     prodRec :: Name -> [Name] -> ([Name], Term, Term) -> Idris Bool
+     prodRec n done _ | n `elem` done = return True
+     prodRec n done (_, _, tm) = prod n done False tm 
 
-     prod ok ap@(App _ _)
-        | (P _ (UN "lazy") _, [_, arg]) <- unApply ap = prod ok arg
-        | (P _ f ty, args) <- unApply ap
-            = let co = cotype ty in
-                  if f == n 
-                     then do argsprod <- mapM (prod co) args
-                             return (and (ok : argsprod) )
-                     else do argsprod <- mapM (prod co) args
-                             return (and argsprod)
-     prod ok (App f a) = liftM2 (&&) (prod False f) (prod False a)
-     prod ok (Bind _ (Let t v) sc) = liftM2 (&&) (prod False v) (prod False v)
-     prod ok (Bind _ b sc) = prod ok sc
-     prod ok t = return True 
-    
-     cotype ty 
+     prod :: Name -> [Name] -> Bool -> Term -> Idris Bool
+     prod n done ok ap@(App _ _)
+        | (P _ (UN "lazy") _, [_, arg]) <- unApply ap = prod n done ok arg
+        | (P nt f _, args) <- unApply ap
+            = do recOK <- checkProdRec (n:done) f
+                 let ctxt = tt_ctxt i
+                 let [ty] = lookupTy f ctxt -- must exist!
+                 let co = cotype nt f ty in
+                     if (not recOK) then return False else
+                       if f == topn 
+                         then do argsprod <- mapM (prod n done co) args
+                                 return (and (ok : argsprod) )
+                         else do argsprod <- mapM (prod n done co) args
+                                 return (and argsprod)
+     prod n done ok (App f a) = liftM2 (&&) (prod n done False f) 
+                                            (prod n done False a)
+     prod n done ok (Bind _ (Let t v) sc) 
+         = liftM2 (&&) (prod n done False v) (prod n done False v)
+     prod n done ok (Bind _ b sc) = prod n done ok sc
+     prod n done ok t = return True 
+   
+     checkProdRec :: [Name] -> Name -> Idris Bool
+     checkProdRec done f 
+        = case lookupCtxt f (idris_patdefs i) of
+               [(def, _)] -> do ok <- mapM (prodRec f done) def
+                                return (and ok)
+               _ -> return True -- defined elsewhere, can't call topn
+
+     cotype (DCon _ _) n ty 
         | (P _ t _, _) <- unApply (getRetTy ty)
             = case lookupCtxt t (idris_datatypes i) of
                    [TI _ True _] -> True
                    _ -> False
-        | otherwise = False
+     cotype nt n ty = False
 
 calcTotality :: [Name] -> FC -> Name -> [([Name], Term, Term)]
                 -> Idris Totality
@@ -444,15 +346,20 @@ buildSCG' ist sc args = -- trace ("Building SCG for " ++ show sc) $
       argRels n = let ctxt = tt_ctxt ist
                       [ty] = lookupTy n ctxt -- must exist!
                       P _ nty _ = fst (unApply (getRetTy ty))
+                      co = case lookupCtxt nty (idris_datatypes ist) of
+                              [TI _ x _] -> x
+                              _ -> False
                       args = map snd (getArgTys ty) in
-                      map (getRel nty) (map (fst . unApply . getRetTy) args)
+                      map (getRel co nty) (map (fst . unApply . getRetTy) args)
         where
-          getRel ty (P _ n' _) | n' == ty = (n, Smaller)
-          getRel ty t = (n, Unknown)
+          getRel True _ _ = (n, Unknown) -- coinductive
+          getRel _ ty (P _ n' _) | n' == ty = (n, Smaller)
+          getRel _ ty t = (n, Unknown)
 
       scgAlt x vars szs (ConCase n _ args sc)
            -- all args smaller than top variable of x in sc
-           -- (as long as they are in the same type family)
+           -- (as long as they are in the same type family, and it's
+           -- not coinductive)
          | Just tvar <- lookup x vars
               = let arel = argRels n
                     szs' = zipWith (\arg (_,t) -> (arg, (x, t))) args arel 

@@ -41,9 +41,26 @@ data IOption = IOption { opt_logLevel   :: Int,
                        }
     deriving (Show, Eq)
 
-defaultOpts = IOption 0 False False True False False True True False ViaC Executable "" [] []
+defaultOpts = IOption { opt_logLevel   = 0
+                      , opt_typecase   = False
+                      , opt_typeintype = False
+                      , opt_coverage   = True
+                      , opt_showimp    = False
+                      , opt_errContext = False
+                      , opt_repl       = True
+                      , opt_verbose    = True
+                      , opt_quiet      = False
+                      , opt_target     = ViaC
+                      , opt_outputTy   = Executable
+                      , opt_ibcsubdir  = ""
+                      , opt_importdirs = []
+                      , opt_cmdline    = []
+                      }
 
 data LanguageExt = TypeProviders deriving (Show, Eq, Read, Ord)
+
+-- | The output mode in use
+data OutputMode = RawOutput | IdeSlave Integer deriving Show
 
 -- TODO: Add 'module data' to IState, which can be saved out and reloaded quickly (i.e
 -- without typechecking).
@@ -62,7 +79,8 @@ data IState = IState {
     idris_dsls :: Ctxt DSL,
     idris_optimisation :: Ctxt OptInfo, 
     idris_datatypes :: Ctxt TypeInfo,
-    idris_patdefs :: Ctxt [([Name], Term, Term)], -- not exported
+    idris_patdefs :: Ctxt ([([Name], Term, Term)], [PTerm]), -- not exported
+      -- ^ list of lhs/rhs, and a list of missing clauses
     idris_flags :: Ctxt [FnOpt],
     idris_callgraph :: Ctxt CGInfo, -- name, args used in each pos
     idris_calledgraph :: Ctxt [Name],
@@ -91,7 +109,8 @@ data IState = IState {
     ibc_write :: [IBCWrite],
     compiled_so :: Maybe String,
     idris_dynamic_libs :: [DynamicLib],
-    idris_language_extensions :: [LanguageExt]
+    idris_language_extensions :: [LanguageExt],
+    idris_outputmode :: OutputMode
    }
 
 data SizeChange = Smaller | Same | Bigger | Unknown
@@ -143,10 +162,11 @@ idrisInit = IState initContext [] [] emptyContext emptyContext emptyContext
                    emptyContext emptyContext emptyContext emptyContext 
                    emptyContext emptyContext emptyContext emptyContext
                    [] "" defaultOpts 6 [] [] [] [] [] [] [] [] []
-                   [] Nothing Nothing [] [] [] Hidden False [] Nothing [] []
+                   [] Nothing Nothing [] [] [] Hidden False [] Nothing [] [] RawOutput
 
 -- | The monad for the main REPL - reading and processing files and updating 
 -- global state (hence the IO inner monad).
+--type Idris = WriterT [Either String (IO ())] (State IState a))
 type Idris = StateT IState IO
 
 -- Commands in the REPL
@@ -202,6 +222,7 @@ data Opt = Filename String
          | Ver
          | Usage
          | Quiet
+         | Ideslave
          | ShowLibs
          | ShowLibdir
          | ShowIncs
