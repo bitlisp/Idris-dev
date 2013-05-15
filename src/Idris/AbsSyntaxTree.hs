@@ -25,6 +25,7 @@ import Data.Either
 import Debug.Trace
 
 data IOption = IOption { opt_logLevel   :: Int,
+                         opt_optLevel   :: Int,
                          opt_typecase   :: Bool,
                          opt_typeintype :: Bool,
                          opt_coverage   :: Bool,
@@ -42,6 +43,7 @@ data IOption = IOption { opt_logLevel   :: Int,
     deriving (Show, Eq)
 
 defaultOpts = IOption { opt_logLevel   = 0
+                      , opt_optLevel   = 2
                       , opt_typecase   = False
                       , opt_typeintype = False
                       , opt_coverage   = True
@@ -229,6 +231,7 @@ data Opt = Filename String
          | NoPrelude
          | NoREPL
          | OLogging Int
+         | OptLevel Int
          | Output String
          | NewOutput String
          | TypeCase

@@ -65,6 +65,7 @@ compile target f tm
             Nothing -> return ()
             Just f -> liftIO $ writeFile f (dumpDefuns defuns)
         iLOG "Building output"
+        opt <- optLevel
         case checked of
             OK c -> liftIO $
                     case target of
@@ -74,7 +75,7 @@ compile target f tm
                       ViaJava -> codegenJava [] c f hdrs libs outty
                       ViaJavaScript -> codegenJavaScript JavaScript c f outty
                       ViaNode -> codegenJavaScript Node c f outty
-                      ViaLLVM -> codegenLLVM c f outty 3
+                      ViaLLVM -> codegenLLVM c f outty opt
                       Bytecode -> dumpBC c f
             Error e -> fail $ show e 
   where checkMVs = do i <- getIState

@@ -288,6 +288,12 @@ setLogLevel l = do i <- getIState
                    let opt' = opts { opt_logLevel = l }
                    putIState $ i { idris_options = opt' }
 
+setOptLevel :: Int -> Idris ()
+setOptLevel l = do i <- getIState
+                   let opts = idris_options i
+                   let opt' = opts { opt_optLevel = l }
+                   putIState $ i { idris_options = opt' }
+
 setCmdLine :: [Opt] -> Idris ()
 setCmdLine opts = do i <- getIState
                      let iopts = idris_options i
@@ -310,6 +316,10 @@ getDumpCases = do i <- getIState
 logLevel :: Idris Int
 logLevel = do i <- getIState
               return (opt_logLevel (idris_options i))
+
+optLevel :: Idris Int
+optLevel = do i <- getIState
+              return (opt_optLevel (idris_options i))
 
 setErrContext :: Bool -> Idris ()
 setErrContext t = do i <- getIState
