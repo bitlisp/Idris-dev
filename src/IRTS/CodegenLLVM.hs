@@ -390,9 +390,53 @@ ensureForeign name returnTy argTys = do
            fty <- functionType nativeRet nativeArgs False
            addFunction name fty
 
+fixedToBig :: Bool -> IntTy -> STValue c s -> ICG c s (STValue c s)
+fixedToBig signed from x = do
+  i <- unbox (FInt from) x
+  i' <- if intTyWidth from < 64
+           then (if signed then buildSExt else buildZExt) "" i =<< intType 64
+           else return i
+  f <- getPrim (if signed then "__gmpz_init_set_si" else "__gmpz_init_set_ui")
+  mpz <- getPrimTy "mpz"
+  mpz_t <- pointerType mpz
+  size <- sizeOf mpz
+  result <- buildAlloc False size
+  result' <- buildPointerCast "" result mpz_t
+  buildCall "" f [result', i']
+  boxVal result'
+
 compilePrim :: PrimFn -> [STValue c s] -> ICG c s (STValue c s)
 compilePrim x args =
     case (x, args) of
+      (LSExt from ITBig, [x]) -> fixedToBig True from x
+      (LZExt from ITBig, [x]) -> fixedToBig False from x
+      (LTrunc ITBig to, [x]) -> do
+                     mpz_t <- pointerType =<< getPrimTy "mpz"
+                     ity <- intType (fromIntegral $ intTyWidth to)
+                     x' <- unbox' x mpz_t
+                     f <- getPrim "__gmpz_get_si"
+                     result <- buildCall "" f [x']
+                     result' <- if intTyWidth to < 64 then buildTrunc "" result ity else return result
+                     boxVal result'
+      (LIntStr ITBig, [x]) -> do
+                     mpz_t <- pointerType =<< getPrimTy "mpz"
+                     i32 <- intType 32
+                     zero <- constInt i32 0 True
+                     nullStr <- constPtrNull =<< pointerType =<< intType 8
+                     x' <- unbox' x mpz_t
+                     f <- getPrim "__gmpz_get_str"
+                     str <- buildCall "" f [nullStr, zero, x']
+                     boxVal str
+      (LPlus ITBig, [x,y]) -> mpzOp "__gmpz_add" x y
+      (LMinus ITBig, [x,y]) -> mpzOp "__gmpz_sub" x y
+      (LTimes ITBig, [x,y]) -> mpzOp "__gmpz_mul" x y
+      (LSDiv ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_q" x y
+      (LSRem ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_r" x y
+      (LEq ITBig, [x,y]) -> mpzCmp IntEQ x y
+      (LLt ITBig, [x,y]) -> mpzCmp IntSLT x y
+      (LLe ITBig, [x,y]) -> mpzCmp IntSLE x y
+      (LGt ITBig, [x,y]) -> mpzCmp IntSGT x y
+      (LGe ITBig, [x,y]) -> mpzCmp IntSGE x y
       (LPlus ty,  [x,y]) -> bin (FInt ty) buildAdd x y
       (LMinus ty, [x,y]) -> bin (FInt ty) buildSub x y
       (LTimes ty, [x,y]) -> bin (FInt ty) buildMul x y
@@ -404,53 +448,17 @@ compilePrim x args =
       (LLe ty, [x,y]) -> icmp (FInt ty) IntSLE x y
       (LGt ty, [x,y]) -> icmp (FInt ty) IntSGT x y
       (LGe ty, [x,y]) -> icmp (FInt ty) IntSGE x y
-      (LIntCh, [x]) -> return x
-      (LChInt, [x]) -> return x
-      (LIntBig, [x]) -> do
-                     i <- unbox (FInt ITNative) x
-                     i' <- buildSExt "" i =<< intType 64
-                     f <- getPrim "__gmpz_init_set_si"
-                     mpz <- getPrimTy "mpz"
-                     mpz_t <- pointerType mpz
-                     size <- sizeOf mpz
-                     result <- buildAlloc False size
-                     result' <- buildPointerCast "" result mpz_t
-                     buildCall "" f [result', i']
-                     boxVal result'
-      (LBigInt, [x]) -> do
-                     mpz_t <- pointerType =<< getPrimTy "mpz"
-                     i32 <- intType 32
-                     x' <- unbox' x mpz_t
-                     f <- getPrim "__gmpz_get_si"
-                     result <- buildCall "" f [x']
-                     result' <- buildTrunc "" result i32
-                     boxVal result'
-      (LBigStr, [x]) -> do
-                     mpz_t <- pointerType =<< getPrimTy "mpz"
-                     i32 <- intType 32
-                     zero <- constInt i32 0 True
-                     nullStr <- constPtrNull =<< pointerType =<< intType 8
-                     x' <- unbox' x mpz_t
-                     f <- getPrim "__gmpz_get_str"
-                     str <- buildCall "" f [nullStr, zero, x']
-                     boxVal str
-      (LBPlus, [x,y]) -> mpzOp "__gmpz_add" x y
-      (LBMinus, [x,y]) -> mpzOp "__gmpz_sub" x y
-      (LBTimes, [x,y]) -> mpzOp "__gmpz_mul" x y
-      (LBDiv, [x,y]) -> mpzOp "__gmpz_fdiv_q" x y
-      (LBMod, [x,y]) -> mpzOp "__gmpz_fdiv_r" x y
-      (LBEq, [x,y]) -> mpzCmp IntEQ x y
-      (LBLt, [x,y]) -> mpzCmp IntSLT x y
-      (LBLe, [x,y]) -> mpzCmp IntSLE x y
-      (LBGt, [x,y]) -> mpzCmp IntSGT x y
-      (LBGe, [x,y]) -> mpzCmp IntSGE x y
+      (LIntCh ITNative, [x]) -> return x
+      (LIntCh IT32, [x]) -> return x
+      (LChInt ITNative, [x]) -> return x
+      (LChInt IT32, [x]) -> return x
       (LFPlus, [x,y]) -> bin FDouble buildFAdd x y
       (LFMinus, [x,y]) -> bin FDouble buildFSub x y
       (LFTimes, [x,y]) -> bin FDouble buildFMul x y
       (LFDiv, [x,y]) -> bin FDouble buildFDiv x y
       (LStrConcat, [x, y]) -> callPrim "strConcat" [(FString, x), (FString, y)]
-      (LIntStr, [x]) -> callPrim "intStr" [(FInt ITNative, x)]
-      (LStrInt, [x]) -> callPrim "strInt" [(FString, x)]
+      (LIntStr ITNative, [x]) -> callPrim "intStr" [(FInt ITNative, x)]
+      (LStrInt ITNative, [x]) -> callPrim "strInt" [(FString, x)]
       (LStrEq, [x, y]) -> callPrim "strEq" [(FString, x), (FString, y)]
       (LStrCons, [x, y]) -> callPrim "strCons" [(FChar, x), (FString, y)]
       (LStrHead, [x]) -> callPrim "strHead" [(FString, x)]
