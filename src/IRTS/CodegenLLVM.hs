@@ -5,8 +5,8 @@ import IRTS.Lang ( FType(..)
                  , PrimFn(..)
                  , LVar(..)
                  , IntTy(..)
-                 , intTyWidth
                  )
+import qualified IRTS.Lang
 import IRTS.Simplified
 import IRTS.CodegenCommon
 import Core.TT
@@ -368,6 +368,10 @@ compile expr = do
     --         ierror $ "Unimplemented IR element: " ++ show x ++ "\n\n"
     --               ++ "Module so far:\n" ++ m
 
+intTyWidth :: IntTy -> Int
+intTyWidth ITNative = intTyWidth (IT32)
+intTyWidth x = IRTS.Lang.intTyWidth x
+
 ftyToNative :: (Monad (m c s), MonadLLVM m) => FType -> m c s (STType c s)
 ftyToNative (FInt ITNative) = ftyToNative (FInt IT32)
 ftyToNative (FInt ity) = intType (fromIntegral $ intTyWidth ity)
@@ -410,7 +414,7 @@ compilePrim x args =
     case (x, args) of
       (LSExt from ITBig, [x]) -> fixedToBig True from x
       (LZExt from ITBig, [x]) -> fixedToBig False from x
-      (LTrunc ITBig to, [x]) -> do
+      (LTrunc ITBig to, [x]) -> do -- TODO: Mark appropriate GMP functions readonly/nothrow
                      mpz_t <- pointerType =<< getPrimTy "mpz"
                      ity <- intType (fromIntegral $ intTyWidth to)
                      x' <- unbox' x mpz_t
@@ -496,11 +500,13 @@ compilePrim x args =
         mpz_t <- pointerType mpz
         l' <- unbox' l mpz_t
         r' <- unbox' r mpz_t
-        f <- getPrim "__gmpz_cmp"
+        f <- getPrim "__gmpz_cmp" -- TODO: Mark readonly/nothrow
         ord <- buildCall "" f [l', r']
         i32 <- intType 32
         zero <- constInt i32 0 True
-        icmp (FInt ITNative) pred ord zero
+        flag <- buildICmp "" pred ord zero
+        int <- buildZExt "" flag i32
+        boxVal int
 
 buildMPZ :: ICG c s (STValue c s)
 buildMPZ  = do
