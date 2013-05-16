@@ -354,6 +354,7 @@ compile expr = do
            result <- buildCall "" func argVals
            case returnTy of
              FUnit -> getUnit
+             FAny -> return result
              _ -> boxVal result
     SNothing -> getNullVal -- Could be undef, except sometimes erasure wipes out a 'return ()' which gets EVALed.
     SError msg ->
@@ -372,13 +373,13 @@ intTyWidth :: IntTy -> CUInt
 intTyWidth ITNative = intTyWidth (IT32)
 intTyWidth x = fromIntegral $ IRTS.Lang.intTyWidth x
 
-ftyToNative :: (Monad (m c s), MonadLLVM m) => FType -> m c s (STType c s)
+ftyToNative :: (Monad (m c s), MonadMG m) => FType -> m c s (STType c s)
 ftyToNative (FInt ITNative) = ftyToNative (FInt IT32)
 ftyToNative (FInt ity) = intType (fromIntegral $ intTyWidth ity)
 ftyToNative FChar   = intType 32
 ftyToNative FString = intType 8 >>= pointerType
 ftyToNative FPtr    = intType 8 >>= pointerType
-ftyToNative FAny    = intType 8 >>= pointerType -- TODO: Verify correctness
+ftyToNative FAny    = getValTy
 ftyToNative FDouble = doubleType
 ftyToNative FUnit   = voidType
 --ftyToNative x       = ierror $ "Unimplemented foreign type: " ++ show x
@@ -626,6 +627,7 @@ unbox FString v = intType 8 >>= pointerType >>= unbox' v
 unbox FPtr    v = intType 8 >>= pointerType >>= unbox' v
 unbox FDouble v = doubleType >>= unbox' v
 unbox FUnit v = return v
+unbox FAny v = return v
 
 unbox' v ty = do
   i8 <- intType 8
