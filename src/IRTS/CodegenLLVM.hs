@@ -368,9 +368,9 @@ compile expr = do
     --         ierror $ "Unimplemented IR element: " ++ show x ++ "\n\n"
     --               ++ "Module so far:\n" ++ m
 
-intTyWidth :: IntTy -> Int
+intTyWidth :: IntTy -> CUInt
 intTyWidth ITNative = intTyWidth (IT32)
-intTyWidth x = IRTS.Lang.intTyWidth x
+intTyWidth x = fromIntegral $ IRTS.Lang.intTyWidth x
 
 ftyToNative :: (Monad (m c s), MonadLLVM m) => FType -> m c s (STType c s)
 ftyToNative (FInt ITNative) = ftyToNative (FInt IT32)
@@ -394,8 +394,17 @@ ensureForeign name returnTy argTys = do
            fty <- functionType nativeRet nativeArgs False
            addFunction name fty
 
-fixedToBig :: Bool -> IntTy -> STValue c s -> ICG c s (STValue c s)
-fixedToBig signed from x = do
+intCoerce :: Bool -> IntTy -> IntTy -> STValue c s -> ICG c s (STValue c s)
+intCoerce _ from to x | from == to = return x
+intCoerce _ ITBig to x = do -- TODO: Mark appropriate GMP functions readonly/nothrow
+  mpz_t <- pointerType =<< getPrimTy "mpz"
+  ity <- intType (fromIntegral $ intTyWidth to)
+  x' <- unbox' x mpz_t
+  f <- getPrim "__gmpz_get_si"
+  result <- buildCall "" f [x']
+  result' <- if intTyWidth to < 64 then buildTrunc "" result ity else return result
+  boxVal result'
+intCoerce signed from ITBig x = do
   i <- unbox (FInt from) x
   i' <- if intTyWidth from < 64
            then (if signed then buildSExt else buildZExt) "" i =<< intType 64
@@ -408,20 +417,23 @@ fixedToBig signed from x = do
   result' <- buildPointerCast "" result mpz_t
   buildCall "" f [result', i']
   boxVal result'
+intCoerce signed from to x
+    | fromWidth > toWidth  = do x' <-  unbox (FInt from) x
+                                boxVal =<< (buildTrunc "" x' =<< toTy)
+    | fromWidth == toWidth = return x
+    | otherwise            = do x' <-  unbox (FInt from) x
+                                boxVal =<< ((if signed then buildSExt else buildZExt) "" x' =<< toTy)
+    where
+      fromWidth = intTyWidth from
+      toWidth = intTyWidth to
+      toTy = intType toWidth
 
 compilePrim :: PrimFn -> [STValue c s] -> ICG c s (STValue c s)
 compilePrim x args =
     case (x, args) of
-      (LSExt from ITBig, [x]) -> fixedToBig True from x
-      (LZExt from ITBig, [x]) -> fixedToBig False from x
-      (LTrunc ITBig to, [x]) -> do -- TODO: Mark appropriate GMP functions readonly/nothrow
-                     mpz_t <- pointerType =<< getPrimTy "mpz"
-                     ity <- intType (fromIntegral $ intTyWidth to)
-                     x' <- unbox' x mpz_t
-                     f <- getPrim "__gmpz_get_si"
-                     result <- buildCall "" f [x']
-                     result' <- if intTyWidth to < 64 then buildTrunc "" result ity else return result
-                     boxVal result'
+      (LSExt from to, [x]) -> intCoerce True from to x
+      (LZExt from to, [x]) -> intCoerce False from to x
+      (LTrunc from to, [x]) -> intCoerce False from to x
       (LIntStr ITBig, [x]) -> do
                      mpz_t <- pointerType =<< getPrimTy "mpz"
                      i32 <- intType 32
@@ -452,10 +464,8 @@ compilePrim x args =
       (LLe ty, [x,y]) -> icmp (FInt ty) IntSLE x y
       (LGt ty, [x,y]) -> icmp (FInt ty) IntSGT x y
       (LGe ty, [x,y]) -> icmp (FInt ty) IntSGE x y
-      (LIntCh ITNative, [x]) -> return x
-      (LIntCh IT32, [x]) -> return x
-      (LChInt ITNative, [x]) -> return x
-      (LChInt IT32, [x]) -> return x
+      (LIntCh ty, [x]) -> intCoerce False ty IT32 x
+      (LChInt ty, [x]) -> intCoerce False IT32 ty x
       (LFPlus, [x,y]) -> bin FDouble buildFAdd x y
       (LFMinus, [x,y]) -> bin FDouble buildFSub x y
       (LFTimes, [x,y]) -> bin FDouble buildFMul x y
@@ -610,7 +620,7 @@ boxVal val = do
 
 unbox :: FType -> STValue c s -> ICG c s (STValue c s)
 unbox (FInt ITNative) v = unbox (FInt IT32) v
-unbox (FInt ity) v = intType (fromIntegral $ intTyWidth ity) >>= unbox' v
+unbox (FInt ity) v = intType (intTyWidth ity) >>= unbox' v
 unbox FChar v = intType 32 >>= unbox' v
 unbox FString v = intType 8 >>= pointerType >>= unbox' v
 unbox FPtr    v = intType 8 >>= pointerType >>= unbox' v
