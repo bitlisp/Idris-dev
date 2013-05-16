@@ -397,7 +397,7 @@ ensureForeign name returnTy argTys = do
 
 intCoerce :: Bool -> IntTy -> IntTy -> STValue c s -> ICG c s (STValue c s)
 intCoerce _ from to x | from == to = return x
-intCoerce _ ITBig to x = do -- TODO: Mark appropriate GMP functions readonly/nothrow
+intCoerce _ ITBig to x = do
   mpz_t <- pointerType =<< getPrimTy "mpz"
   ity <- intType (fromIntegral $ intTyWidth to)
   x' <- unbox' x mpz_t
@@ -444,11 +444,15 @@ compilePrim x args =
                      f <- getPrim "__gmpz_get_str"
                      str <- buildCall "" f [nullStr, zero, x']
                      boxVal str
-      (LPlus ITBig, [x,y]) -> mpzOp "__gmpz_add" x y
-      (LMinus ITBig, [x,y]) -> mpzOp "__gmpz_sub" x y
-      (LTimes ITBig, [x,y]) -> mpzOp "__gmpz_mul" x y
-      (LSDiv ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_q" x y
-      (LSRem ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_r" x y
+      (LPlus ITBig, [x,y]) -> mpzOp "__gmpz_add" [x, y]
+      (LMinus ITBig, [x,y]) -> mpzOp "__gmpz_sub" [x, y]
+      (LTimes ITBig, [x,y]) -> mpzOp "__gmpz_mul" [x, y]
+      (LSDiv ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_q" [x, y]
+      (LSRem ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_r" [x, y]
+      (LAnd ITBig, [x,y]) -> mpzOp "__gmpz_and" [x, y]
+      (LOr ITBig, [x,y]) -> mpzOp "__gmpz_ior" [x, y]
+      (LXOr ITBig, [x,y]) -> mpzOp "__gmpz_xor" [x, y]
+      (LCompl ITBig, [x]) -> mpzOp "__gmpz_com" [x]
       (LEq ITBig, [x,y]) -> mpzCmp IntEQ x y
       (LLt ITBig, [x,y]) -> mpzCmp IntSLT x y
       (LLe ITBig, [x,y]) -> mpzCmp IntSLE x y
@@ -458,7 +462,16 @@ compilePrim x args =
       (LMinus ty, [x,y]) -> bin (FInt ty) buildSub x y
       (LTimes ty, [x,y]) -> bin (FInt ty) buildMul x y
       (LAnd ty,   [x,y]) -> bin (FInt ty) buildAnd x y
+      (LOr ty,    [x,y]) -> bin (FInt ty) buildOr x y
+      (LXOr ty,   [x,y]) -> bin (FInt ty) buildXor x y
+      (LCompl ty,   [x]) -> do
+                     x' <- unbox (FInt ty) x
+                     yty <- ftyToNative (FInt ty)
+                     y <- constInt yty (-1) True
+                     boxVal =<< buildXor "" x y
       (LSHL ty,   [x,y]) -> bin (FInt ty) buildShl x y
+      (LLSHR ty,  [x,y]) -> bin (FInt ty) buildLShr x y
+      (LASHR ty,  [x,y]) -> bin (FInt ty) buildAShr x y
       (LSRem ty,   [x,y]) -> bin (FInt ty) buildSRem x y
       (LEq ty, [x,y]) -> icmp (FInt ty) IntEQ x y
       (LLt ty, [x,y]) -> icmp (FInt ty) IntSLT x y
@@ -472,8 +485,26 @@ compilePrim x args =
       (LFTimes, [x,y]) -> bin FDouble buildFMul x y
       (LFDiv, [x,y]) -> bin FDouble buildFDiv x y
       (LStrConcat, [x, y]) -> callPrim "strConcat" [(FString, x), (FString, y)]
-      (LIntStr ITNative, [x]) -> callPrim "intStr" [(FInt ITNative, x)]
-      (LStrInt ITNative, [x]) -> callPrim "strInt" [(FString, x)]
+      (LIntStr ty, [x]) -> do
+                     x' <- unbox (FInt ty) x
+                     x'' <- if intTyWidth ty < 64
+                               then buildSExt "" x' =<< ftyToNative (FInt IT64)
+                               else return x'
+                     intStr <- getPrim "intStr"
+                     str <- buildCall "" intStr [x'']
+                     setInstrCallConv str Fast
+                     boxVal str
+      (LStrInt ty, [x]) -> do
+                     x' <- unbox FString x
+                     strtol <- getPrim "strtol"
+                     null <- constPtrNull =<< pointerType =<< pointerType =<< intType 8
+                     i32 <- intType 32
+                     ten <- constInt i32 10 True
+                     val <- buildCall "" strtol [x', null, ten]
+                     val' <- if intTyWidth ty < 64
+                                then buildTrunc "" val =<< ftyToNative (FInt ty)
+                                else return val
+                     boxVal val'
       (LStrEq, [x, y]) -> callPrim "strEq" [(FString, x), (FString, y)]
       (LStrCons, [x, y]) -> callPrim "strCons" [(FChar, x), (FString, y)]
       (LStrHead, [x]) -> callPrim "strHead" [(FString, x)]
@@ -497,13 +528,12 @@ compilePrim x args =
         result <- f "" l' r'
         boxVal result
 
-      mpzOp n l r = do
+      mpzOp n as = do
         mpz_t <- pointerType =<< getPrimTy "mpz"
-        l' <- unbox' l mpz_t
-        r' <- unbox' r mpz_t
+        as' <- mapM (flip unbox' mpz_t) as
         result <- buildMPZ
         f <- getPrim n
-        buildCall "" f [result, l', r']
+        buildCall "" f (result : as')
         boxVal result
 
       mpzCmp pred l r = do
@@ -511,7 +541,7 @@ compilePrim x args =
         mpz_t <- pointerType mpz
         l' <- unbox' l mpz_t
         r' <- unbox' r mpz_t
-        f <- getPrim "__gmpz_cmp" -- TODO: Mark readonly/nothrow
+        f <- getPrim "__gmpz_cmp"
         ord <- buildCall "" f [l', r']
         i32 <- intType 32
         zero <- constInt i32 0 True
@@ -601,7 +631,6 @@ boxVal val = do
   --          buildAssert p isNull "Boxed a null pointer"
   --   _ -> return ()
 
-  const <- isConstant val
   case kind of
     VoidTypeKind -> getUnit
     _ -> do boxTy <- structType [i8, innerTy] False

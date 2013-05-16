@@ -38,13 +38,17 @@ declare void @__gmpz_mul(%mpz*, %mpz*, %mpz*)
 declare void @__gmpz_fdiv_q(%mpz*, %mpz*, %mpz*)
 declare void @__gmpz_fdiv_r(%mpz*, %mpz*, %mpz*)
 declare void @__gmpz_mod(%mpz*, %mpz*, %mpz*)
+declare void @__gmpz_and(%mpz*, %mpz*, %mpz*)
+declare void @__gmpz_ior(%mpz*, %mpz*, %mpz*)
+declare void @__gmpz_xor(%mpz*, %mpz*, %mpz*)
+declare void @__gmpz_com(%mpz*, %mpz*)
 declare i32 @__gmpz_cmp_si(%mpz*, i64) nounwind readonly
 declare i32 @__gmpz_cmp(%mpz*, %mpz*) nounwind readonly
 declare i8* @__gmpz_get_str(i8*, i32, %mpz*)
 
 @emptyStr = private unnamed_addr constant [1 x i8] zeroinitializer, align 1
 @strfmt = private unnamed_addr constant [3 x i8] c"%s\00", align 1
-@intfmt = private unnamed_addr constant [3 x i8] c"%d\00", align 1
+@intfmt = private unnamed_addr constant [4 x i8] c"%ld\00", align 1
 
 define internal i8* @gmp_realloc(i8* %ptr, i64 %old, i64 %new) {
   %1 = tail call i8* @GC_realloc(i8* %ptr, i64 %new)
@@ -112,19 +116,13 @@ define internal fastcc i8* @strConcat(i8* %l, i8* %r) nounwind {
   ret i8* %5
 }
 
-define internal fastcc noalias i8* @intStr(i32 %i) nounwind {
+define internal fastcc noalias i8* @intStr(i64 %i) nounwind {
   %1 = tail call noalias i8* @GC_malloc_atomic(i64 12) nounwind
-  %2 = tail call i32 (i8*, i64, i8*, ...)* @snprintf(i8* %1, i64 12, i8* getelementptr inbounds ([3 x i8]* @intfmt, i64 0, i64 0), i32 %i) nounwind
+  %2 = tail call i32 (i8*, i64, i8*, ...)* @snprintf(i8* %1, i64 12, i8* getelementptr inbounds ([4 x i8]* @intfmt, i64 0, i64 0), i64 %i) nounwind
   ret i8* %1
 }
 
 declare i64 @strtol(i8*, i8**, i32)
-
-define internal fastcc i32 @strInt(i8* %s) nounwind {
-  %1 = tail call i64 @strtol(i8* %s, i8** null, i32 10)
-  %2 = trunc i64 %1 to i32
-  ret i32 %2
-}
 
 define internal fastcc i32 @strEq(i8* %l, i8* %r) nounwind {
   %1 = call i32 @strcmp(i8* %l, i8* %r) nounwind readonly
