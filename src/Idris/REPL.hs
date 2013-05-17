@@ -692,6 +692,7 @@ idrisMain opts =
        when (not ok) $ liftIO (exitWith (ExitFailure 1))
   where
     makeOption (OLogging i) = setLogLevel i
+    makeOption (OptLevel l) = setOptLevel l
     makeOption TypeCase = setTypeCase True
     makeOption TypeInType = setTypeInType True
     makeOption NoCoverage = setCoverage False
