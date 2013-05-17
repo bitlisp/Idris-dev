@@ -24,7 +24,6 @@ import System.Info (arch)
 import Control.Monad
 import Control.Monad.State
 import Data.List
-import Debug.Trace
 
 -- TODO: Perform optimization and assembly writing internally
 codegenLLVM :: [(Name, SDecl)] ->
@@ -249,7 +248,8 @@ toDecl (SFun name argNames _ e) = do
   addFuncAttrib func NoUnwindAttribute
   params <- getFunctionParams func
   forM_  (zip argNames params) $ \(argName, param) ->
-      setValueName param (show argName)
+      do setValueName param (show argName)
+         addParamAttrib param NoAliasAttribute
   return func
 
 toDef :: SDecl -> CodeGen c s ()
