@@ -16,6 +16,8 @@ declare double    @llvm.trunc.f64(double %Val)
 
 declare {}* @llvm.invariant.start(i64, i8* nocapture)
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i32, i1)
+declare void @llvm.memset.p0i8.i32(i8*, i8, i32, i32, i1)
+declare void @llvm.memmove.p0i8.p0i8.i32(i8*, i8*, i32, i32, i1)
 declare void @llvm.trap() noreturn nounwind
 declare i32 @printf(i8* nocapture, ...) nounwind
 declare i8* @fgets(i8*, i32, i8* nocapture) nounwind
@@ -57,6 +59,46 @@ define internal i8* @gmp_realloc(i8* %ptr, i64 %old, i64 %new) {
 
 define internal void @gmp_free(i8* %ptr, i64 %size) {
   tail call void @GC_free(i8* %ptr)
+  ret void
+}
+
+define internal void @idris_memset(i8* %ptr, i32 %off, i8 %val, i32 %len) {
+  %1 = ptrtoint i8* %ptr to i64
+  %2 = zext i32 %off to i64
+  %3 = add i64 %1, %2
+  %4 = inttoptr i64 %3 to i8*
+  tail call void @llvm.memset.p0i8.i32(i8* %4, i8 %val, i32 %len, i32 0, i1 false)
+  ret void
+}
+
+define internal void @idris_memmove(i8* %dest, i8* %src, i32 %doff, i32 %soff, i32 %len) {
+  %1 = ptrtoint i8* %dest to i64
+  %2 = zext i32 %doff to i64
+  %3 = add i64 %1, %2
+  %4 = inttoptr i64 %3 to i8*
+  %5 = ptrtoint i8* %src to i64
+  %6 = zext i32 %soff to i64
+  %7 = add i64 %5, %6
+  %8 = inttoptr i64 %7 to i8*
+  tail call void @llvm.memmove.p0i8.p0i8.i32(i8* %4, i8* %8, i32 %len, i32 0, i1 false)
+  ret void
+}
+
+define internal i8 @idris_peek(i8* %ptr, i32 %off) {
+  %1 = ptrtoint i8* %ptr to i64
+  %2 = zext i32 %off to i64
+  %3 = add i64 %1, %2
+  %4 = inttoptr i64 %3 to i8*
+  %5 = load i8* %4, align 1
+  ret i8 %5
+}
+
+define internal void @idris_poke(i8* %ptr, i32 %off, i8 %val) {
+  %1 = ptrtoint i8* %ptr to i64
+  %2 = zext i32 %off to i64
+  %3 = add i64 %1, %2
+  %4 = inttoptr i64 %3 to i8*
+  store i8 %val, i8* %4, align 1
   ret void
 }
 
