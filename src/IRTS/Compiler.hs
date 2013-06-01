@@ -168,6 +168,8 @@ instance ToIR (TT Name) where
           | (P _ (UN "lazy") _, [_, arg]) <- unApply tm
               = do arg' <- ir' env arg
                    return $ LLazyExp arg'
+          | (P _ (UN "assert_smaller") _, [_, _, _, arg]) <- unApply tm
+              = ir' env arg
           | (P _ (UN "par") _, [_, arg]) <- unApply tm
               = do arg' <- ir' env arg
                    return $ LOp LPar [LLazyExp arg']
