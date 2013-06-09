@@ -41,6 +41,7 @@ rtsDir local = ".." </> buildDir local </> "rts" </> "libidris_rts"
 cleanStdLib verbosity
     = do make verbosity [ "-C", "lib", "clean", "IDRIS=idris" ]
          make verbosity [ "-C", "effects", "clean", "IDRIS=idris" ]
+         make verbosity [ "-C", "javascript", "clean", "IDRIS=idris" ]
 
 cleanJavaLib verbosity 
   = do dirty <- doesDirectoryExist ("java" </> "target")
@@ -66,6 +67,11 @@ installStdLib pkg local withoutEffects verbosity copy
                  , "TARGET=" ++ idir
                  , "IDRIS=" ++ icmd
                  ]
+         make verbosity
+               [ "-C", "javascript", "install"
+               , "TARGET=" ++ idir
+               , "IDRIS=" ++ icmd
+               ]
          let idirRts = idir </> "rts"
          putStrLn $ "Installing run time system in " ++ idirRts
          make verbosity
@@ -119,6 +125,10 @@ checkStdLib local withoutEffects verbosity
          unless withoutEffects $
            make verbosity
                [ "-C", "effects", "check"
+               , "IDRIS=" ++ icmd
+               ]
+         make verbosity
+               [ "-C", "javascript", "check"
                , "IDRIS=" ++ icmd
                ]
          make verbosity
