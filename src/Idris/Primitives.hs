@@ -255,21 +255,6 @@ iCoerce from to op impl irop =
 p_believeMe [_,_,x] = Just x
 p_believeMe _ = Nothing
 
-iUn op [VConstant (I x)] = Just $ VConstant (I (op x))
-iUn _ _ = Nothing
-
-iBin op [VConstant (I x), VConstant (I y)] = Just $ VConstant (I (op x y))
-iBin _ _ = Nothing
-
-bBin op [VConstant (BI x), VConstant (BI y)] = Just $ VConstant (BI (op x y))
-bBin _ _ = Nothing
-
-bBini op [VConstant (BI x), VConstant (BI y)] = Just $ VConstant (I (op x y))
-bBini _ _ = Nothing
-
-biBin op = iBin (\x y -> if (op x y) then 1 else 0)
-bbBin op = bBini (\x y -> if (op x y) then 1 else 0)
-
 fBin op [VConstant (Fl x), VConstant (Fl y)] = Just $ VConstant (Fl (op x y))
 fBin _ _ = Nothing
 
