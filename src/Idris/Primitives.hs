@@ -188,13 +188,20 @@ primitives =
     ++ concatMap vecOps [ITVec IT8 16, ITVec IT16 8, ITVec IT32 4, ITVec IT64 2]
 
 intOps :: IntTy -> [Prim]
-intOps ity =
+intOps ity = intCmps ity ++ intArith ity ++ intConv ity
+
+intCmps :: IntTy -> [Prim]
+intCmps ity =
     [ iCmp ity "lt" (bCmp ity (<)) (LLt . ATInt) total
     , iCmp ity "lte" (bCmp ity (<=)) (LLe . ATInt) total
     , iCmp ity "eq" (bCmp ity (==)) (LEq . ATInt) total
     , iCmp ity "gte" (bCmp ity (>=)) (LGe . ATInt) total
     , iCmp ity "gt" (bCmp ity (>)) (LGt . ATInt) total
-    , iBinOp ity "add" (bitBin ity (+)) (LPlus . ATInt) total
+    ]
+
+intArith :: IntTy -> [Prim]
+intArith ity =
+    [ iBinOp ity "add" (bitBin ity (+)) (LPlus . ATInt) total
     , iBinOp ity "sub" (bitBin ity (-)) (LMinus . ATInt) total
     , iBinOp ity "mul" (bitBin ity (*)) (LTimes . ATInt) total
     , iBinOp ity "udiv" (bitBin ity div) LUDiv partial
@@ -208,7 +215,11 @@ intOps ity =
     , iBinOp ity "or" (bitBin ity (.|.)) LOr total
     , iBinOp ity "xor" (bitBin ity (xor)) LXOr total
     , iUnOp ity "compl" (bUn ity complement) LCompl total
-    , Prim (UN $ "prim__toStr" ++ intTyName ity) (ty [AType . ATInt $ ity] StrType) 1 intToStr
+    ]
+
+intConv :: IntTy -> [Prim]
+intConv ity =
+    [ Prim (UN $ "prim__toStr" ++ intTyName ity) (ty [AType . ATInt $ ity] StrType) 1 intToStr
                (1, LIntStr ity) total
     , Prim (UN $ "prim__fromStr" ++ intTyName ity) (ty [StrType] (AType . ATInt $ ity)) 1 (strToInt ity)
                (1, LStrInt ity) total
@@ -218,15 +229,17 @@ intOps ity =
                (1, LFloatInt ity) total
     ]
 
+vecOps :: IntTy -> [Prim]
 vecOps ity@(ITVec elem count) =
     [ Prim (UN $ "prim__mk" ++ intTyName ity)
                (ty (replicate count . AType . ATInt . ITFixed $ elem) (AType . ATInt $ ity))
                count (mkVecCon elem count) (count, LMkVec elem count) total
-    ]
+    ] ++ intArith ity
 
+mkVecCon :: IntTy -> Int -> [Const] -> Const
 mkVecCon ity count args = if length ints == count
                           then Just $ VConstant (mkVec ity count ints)
-                          else error $ "Got: " ++ show args ++ " when expecting " ++ show count ++ " x " ++ show ity
+                          else Nothing
     where
       ints = getInt args
       mkVec :: NativeTy -> Int -> [Integer] -> Const
@@ -298,6 +311,18 @@ bsrem (ITFixed IT32) [VConstant (B32 x), VConstant (B32 y)]
 bsrem (ITFixed IT64) [VConstant (B64 x), VConstant (B64 y)]
     = Just $ VConstant (B64 (fromIntegral (fromIntegral x `rem` fromIntegral y :: Int64)))
 bsrem ITNative [VConstant (I x), VConstant (I y)] = Just $ VConstant (I (x `rem` y))
+bsrem (ITVec IT8  _) [VConstant (B8V  x), VConstant (B8V  y)]
+    = Just . VConstant . B8V  $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `rem` fromIntegral d :: Int8)))  x y
+bsrem (ITVec IT16 _) [VConstant (B16V x), VConstant (B16V y)]
+    = Just . VConstant . B16V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `rem` fromIntegral d :: Int16))) x y
+bsrem (ITVec IT32 _) [VConstant (B32V x), VConstant (B32V y)]
+    = Just . VConstant . B32V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `rem` fromIntegral d :: Int64))) x y
+bsrem (ITVec IT64 _) [VConstant (B64V x), VConstant (B64V y)]
+    = Just . VConstant . B64V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `rem` fromIntegral d :: Int64))) x y
 bsrem _ _ = Nothing
 
 bsdiv :: IntTy -> [Value] -> Maybe Value
@@ -310,6 +335,18 @@ bsdiv (ITFixed IT32) [VConstant (B32 x), VConstant (B32 y)]
 bsdiv (ITFixed IT64) [VConstant (B64 x), VConstant (B64 y)]
     = Just $ VConstant (B64 (fromIntegral (fromIntegral x `div` fromIntegral y :: Int64)))
 bsdiv ITNative [VConstant (I x), VConstant (I y)] = Just $ VConstant (I (x `div` y))
+bsdiv (ITVec IT8  _) [VConstant (B8V  x), VConstant (B8V  y)]
+    = Just . VConstant . B8V  $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `div` fromIntegral d :: Int8)))  x y
+bsdiv (ITVec IT16 _) [VConstant (B16V x), VConstant (B16V y)]
+    = Just . VConstant . B16V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `div` fromIntegral d :: Int16))) x y
+bsdiv (ITVec IT32 _) [VConstant (B32V x), VConstant (B32V y)]
+    = Just . VConstant . B32V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `div` fromIntegral d :: Int64))) x y
+bsdiv (ITVec IT64 _) [VConstant (B64V x), VConstant (B64V y)]
+    = Just . VConstant . B64V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `div` fromIntegral d :: Int64))) x y
 bsdiv _ _ = Nothing
 
 bashr :: IntTy -> [Value] -> Maybe Value
@@ -322,6 +359,18 @@ bashr (ITFixed IT32) [VConstant (B32 x), VConstant (B32 y)]
 bashr (ITFixed IT64) [VConstant (B64 x), VConstant (B64 y)]
     = Just $ VConstant (B64 (fromIntegral (fromIntegral x `shiftR` fromIntegral y :: Int64)))
 bashr ITNative [VConstant (I x), VConstant (I y)] = Just $ VConstant (I (x `shiftR` y))
+bashr (ITVec IT8  _) [VConstant (B8V  x), VConstant (B8V  y)]
+    = Just . VConstant . B8V  $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `shiftR` fromIntegral d :: Int8)))  x y
+bashr (ITVec IT16 _) [VConstant (B16V x), VConstant (B16V y)]
+    = Just . VConstant . B16V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `shiftR` fromIntegral d :: Int16))) x y
+bashr (ITVec IT32 _) [VConstant (B32V x), VConstant (B32V y)]
+    = Just . VConstant . B32V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `shiftR` fromIntegral d :: Int64))) x y
+bashr (ITVec IT64 _) [VConstant (B64V x), VConstant (B64V y)]
+    = Just . VConstant . B64V $
+      V.zipWith (\n d -> (fromIntegral (fromIntegral n `shiftR` fromIntegral d :: Int64))) x y
 bashr _ _ = Nothing
 
 bUn :: IntTy -> (forall a. Bits a => a -> a) -> [Value] -> Maybe Value
@@ -331,6 +380,10 @@ bUn (ITFixed IT32) op [VConstant (B32 x)] = Just $ VConstant (B32 (op x))
 bUn (ITFixed IT64) op [VConstant (B64 x)] = Just $ VConstant (B64 (op x))
 bUn ITBig op [VConstant (BI x)] = Just $ VConstant (BI (op x))
 bUn ITNative op [VConstant (I x)] = Just $ VConstant (I (op x))
+bUn (ITVec IT8  _) op [VConstant (B8V  x)] = Just . VConstant . B8V  $ V.map op x
+bUn (ITVec IT16 _) op [VConstant (B16V x)] = Just . VConstant . B16V $ V.map op x
+bUn (ITVec IT32 _) op [VConstant (B32V x)] = Just . VConstant . B32V $ V.map op x
+bUn (ITVec IT64 _) op [VConstant (B64V x)] = Just . VConstant . B64V $ V.map op x
 bUn _ _ _ = Nothing
 
 bitBin :: IntTy -> (forall a. (Bits a, Integral a) => a -> a -> a) -> [Value] -> Maybe Value
@@ -340,6 +393,14 @@ bitBin (ITFixed IT32) op [VConstant (B32 x), VConstant (B32 y)] = Just $ VConsta
 bitBin (ITFixed IT64) op [VConstant (B64 x), VConstant (B64 y)] = Just $ VConstant (B64 (op x y))
 bitBin ITBig op [VConstant (BI x), VConstant (BI y)] = Just $ VConstant (BI (op x y))
 bitBin ITNative op [VConstant (I x), VConstant (I y)] = Just $ VConstant (I (op x y))
+bitBin (ITVec IT8  _) op [VConstant (B8V  x), VConstant (B8V  y)]
+    = Just . VConstant . B8V  $ V.zipWith op x y
+bitBin (ITVec IT16 _) op [VConstant (B16V x), VConstant (B16V y)]
+    = Just . VConstant . B16V $ V.zipWith op x y
+bitBin (ITVec IT32 _) op [VConstant (B32V x), VConstant (B32V y)]
+    = Just . VConstant . B32V $ V.zipWith op x y
+bitBin (ITVec IT64 _) op [VConstant (B64V x), VConstant (B64V y)]
+    = Just . VConstant . B64V $ V.zipWith op x y
 bitBin _ _ _ = Nothing
 
 bCmp :: IntTy -> (forall a. Ord a => a -> a -> Bool) -> [Value] -> Maybe Value
