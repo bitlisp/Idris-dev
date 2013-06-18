@@ -264,28 +264,6 @@ p_believeMe :: [a] -> Maybe a
 p_believeMe [_,_,x] = Just x
 p_believeMe _ = Nothing
 
-iUn :: (Int -> Int) -> [Value] -> Maybe Value
-iUn op [VConstant (I x)] = Just $ VConstant (I (op x))
-iUn _ _ = Nothing
-
-iBin :: (Int -> Int -> Int) -> [Value] -> Maybe Value
-iBin op [VConstant (I x), VConstant (I y)] = Just $ VConstant (I (op x y))
-iBin _ _ = Nothing
-
-bBin :: (Integer -> Integer -> Integer) -> [Value] -> Maybe Value
-bBin op [VConstant (BI x), VConstant (BI y)] = Just $ VConstant (BI (op x y))
-bBin _ _ = Nothing
-
-bBini :: (Integer -> Integer -> Int) -> [Value] -> Maybe Value
-bBini op [VConstant (BI x), VConstant (BI y)] = Just $ VConstant (I (op x y))
-bBini _ _ = Nothing
-
-biBin :: (Int -> Int -> Bool) -> [Value] -> Maybe Value
-biBin op = iBin (\x y -> if (op x y) then 1 else 0)
-
-bbBin :: (Integer -> Integer -> Bool) -> [Value] -> Maybe Value
-bbBin op = bBini (\x y -> if (op x y) then 1 else 0)
-
 fBin :: (Double -> Double -> Double) -> [Value] -> Maybe Value
 fBin op [VConstant (Fl x), VConstant (Fl y)] = Just $ VConstant (Fl (op x y))
 fBin _ _ = Nothing
