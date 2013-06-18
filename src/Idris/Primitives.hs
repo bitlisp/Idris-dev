@@ -225,6 +225,13 @@ vecOps ity@(ITVec elem count) =
     [ Prim (UN $ "prim__mk" ++ intTyName ity)
                (ty (replicate count . AType . ATInt . ITFixed $ elem) (AType . ATInt $ ity))
                count (mkVecCon elem count) (count, LMkVec elem count) total
+    , Prim (UN $ "prim__index" ++ intTyName ity)
+               (ty [AType . ATInt $ ity, AType (ATInt (ITFixed IT32))] (AType . ATInt . ITFixed $ elem))
+               2 (mkVecIndex count) (2, LIdxVec elem count) partial -- TODO: Ensure this reduces
+    , Prim (UN $ "prim__update" ++ intTyName ity)
+               (ty [AType . ATInt $ ity, AType (ATInt (ITFixed IT32)), AType . ATInt . ITFixed $ elem]
+                       (AType . ATInt $ ity))
+               3 (mkVecUpdate elem count) (3, LUpdateVec elem count) partial -- TODO: Ensure this reduces
     ] ++ intArith ity
 
 mkVecCon ity count args = if length ints == count
@@ -237,6 +244,24 @@ mkVecCon ity count args = if length ints == count
       mkVec IT16 len values = B16V $ V.generate len (fromInteger . (values !!))
       mkVec IT32 len values = B32V $ V.generate len (fromInteger . (values !!))
       mkVec IT64 len values = B64V $ V.generate len (fromInteger . (values !!))
+
+mkVecIndex count [VConstant vec, VConstant (B32 i)] = Just $ VConstant (idxVec vec)
+    where
+      idxVec :: Const -> Const
+      idxVec (B8V  v) = B8  $ V.unsafeIndex v (fromIntegral i)
+      idxVec (B16V v) = B16 $ V.unsafeIndex v (fromIntegral i)
+      idxVec (B32V v) = B32 $ V.unsafeIndex v (fromIntegral i)
+      idxVec (B64V v) = B64 $ V.unsafeIndex v (fromIntegral i)
+mkVecIndex _ _ = Nothing
+
+mkVecUpdate ity count [VConstant vec, VConstant (B32 i), VConstant newElem]
+    = fmap VConstant (updateVec vec newElem)
+    where
+      updateVec :: Const -> Const -> Maybe Const
+      updateVec (B8V  v) (B8  e) = Just . B8V  $ V.unsafeUpdate v (V.singleton (fromIntegral i, e))
+      updateVec (B16V v) (B16 e) = Just . B16V $ V.unsafeUpdate v (V.singleton (fromIntegral i, e))
+      updateVec (B32V v) (B32 e) = Just . B32V $ V.unsafeUpdate v (V.singleton (fromIntegral i, e))
+      updateVec (B64V v) (B64 e) = Just . B64V $ V.unsafeUpdate v (V.singleton (fromIntegral i, e))
 
 intTyName :: IntTy -> String
 intTyName ITNative = "Int"
