@@ -291,7 +291,7 @@ mkIty' (App (App (P _ (UN "FFunction") _) _) (App (P _ (UN "FAny") _) (App (P _ 
 mkIty' (App (App (P _ (UN "FFunction") _) _) _) = FFunction
 mkIty' _ = FAny
 
-mkIty "FFloat"      = FDouble
+mkIty "FFloat"      = FArith ATFloat
 mkIty "FChar"       = FChar
 mkIty "FString"     = FString
 mkIty "FPtr"        = FPtr
@@ -299,11 +299,11 @@ mkIty "FUnit"       = FUnit
 mkIty "FFunction"   = FFunction
 mkIty "FFunctionIO" = FFunctionIO
 
-mkIntIty "ITNative" = FInt ITNative
-mkIntIty "IT8"  = FInt IT8
-mkIntIty "IT16" = FInt IT16
-mkIntIty "IT32" = FInt IT32
-mkIntIty "IT64" = FInt IT64
+mkIntIty "ITNative" = FArith (ATInt ITNative)
+mkIntIty "IT8"  = FArith (ATInt (ITFixed IT8))
+mkIntIty "IT16" = FArith (ATInt (ITFixed IT16))
+mkIntIty "IT32" = FArith (ATInt (ITFixed IT32))
+mkIntIty "IT64" = FArith (ATInt (ITFixed IT64))
 
 zname = NS (UN "O") ["Nat","Prelude"] 
 sname = NS (UN "S") ["Nat","Prelude"] 
@@ -357,15 +357,15 @@ instance ToIR SC where
         matchable (Str _) = True
         matchable _ = False
 
-        matchableTy IType = True
-        matchableTy BIType = True
+        matchableTy (AType (ATInt ITNative)) = True
+        matchableTy (AType (ATInt ITBig)) = True
         matchableTy ChType = True
         matchableTy StrType = True
 
-        matchableTy B8Type  = True
-        matchableTy B16Type = True
-        matchableTy B32Type = True
-        matchableTy B64Type = True
+        matchableTy (AType (ATInt (ITFixed IT8)))  = True
+        matchableTy (AType (ATInt (ITFixed IT16))) = True
+        matchableTy (AType (ATInt (ITFixed IT32))) = True
+        matchableTy (AType (ATInt (ITFixed IT64))) = True
 
         matchableTy _ = False
 
