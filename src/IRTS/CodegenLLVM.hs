@@ -4,12 +4,11 @@ import IRTS.Bytecode
 import IRTS.Lang ( FType(..)
                  , PrimFn(..)
                  , LVar(..)
-                 , IntTy(..)
                  )
 import qualified IRTS.Lang
 import IRTS.Simplified
 import IRTS.CodegenCommon
-import Core.TT
+import Core.TT hiding (intTyWidth)
 import Util.System
 import Paths_idris
 
@@ -370,17 +369,20 @@ compile expr = do
     --               ++ "Module so far:\n" ++ m
 
 intTyWidth :: IntTy -> CUInt
-intTyWidth ITNative = intTyWidth (IT32)
-intTyWidth x = fromIntegral $ IRTS.Lang.intTyWidth x
+intTyWidth ITNative = fromIntegral $ nativeTyWidth (IT32)
+intTyWidth (ITFixed x) = fromIntegral $ nativeTyWidth x
 
 ftyToNative :: (Monad (m c s), MonadMG m) => FType -> m c s (STType c s)
-ftyToNative (FInt ITNative) = ftyToNative (FInt IT32)
-ftyToNative (FInt ity) = intType (fromIntegral $ intTyWidth ity)
+ftyToNative (FArith ATFloat) = doubleType
+ftyToNative (FArith (ATInt ITNative)) = ftyToNative (FArith (ATInt (ITFixed IT32)))
+ftyToNative (FArith (ATInt (ITFixed ity))) = intType (fromIntegral $ nativeTyWidth ity)
+ftyToNative (FArith (ATInt (ITVec ity count))) =
+    do lity <- intType (fromIntegral $ nativeTyWidth ity)
+       vectorType lity (fromIntegral count)
 ftyToNative FChar   = intType 32
 ftyToNative FString = intType 8 >>= pointerType
 ftyToNative FPtr    = intType 8 >>= pointerType
 ftyToNative FAny    = getValTy
-ftyToNative FDouble = doubleType
 ftyToNative FUnit   = voidType
 --ftyToNative x       = ierror $ "Unimplemented foreign type: " ++ show x
 
@@ -406,7 +408,7 @@ intCoerce _ ITBig to x = do
   result' <- if intTyWidth to < 64 then buildTrunc "" result ity else return result
   boxVal result'
 intCoerce signed from ITBig x = do
-  i <- unbox (FInt from) x
+  i <- unbox (FArith (ATInt from)) x
   i' <- if intTyWidth from < 64
            then (if signed then buildSExt else buildZExt) "" i =<< intType 64
            else return i
@@ -415,10 +417,10 @@ intCoerce signed from ITBig x = do
   buildCall "" f [result, i']
   boxVal result
 intCoerce signed from to x
-    | fromWidth > toWidth  = do x' <-  unbox (FInt from) x
+    | fromWidth > toWidth  = do x' <-  unbox (FArith (ATInt from)) x
                                 boxVal =<< (buildTrunc "" x' =<< toTy)
     | fromWidth == toWidth = return x
-    | otherwise            = do x' <-  unbox (FInt from) x
+    | otherwise            = do x' <-  unbox (FArith (ATInt from)) x
                                 boxVal =<< ((if signed then buildSExt else buildZExt) "" x' =<< toTy)
     where
       fromWidth = intTyWidth from
@@ -435,55 +437,54 @@ compilePrim x args =
                      i32 <- intType 32
                      ten <- constInt i32 10 True
                      nullStr <- constPtrNull =<< pointerType =<< intType 8
-                     x' <- unbox (FInt ITBig) x
+                     x' <- unbox (FArith (ATInt ITBig)) x
                      f <- getPrim "__gmpz_get_str"
                      str <- buildCall "" f [nullStr, ten, x']
                      boxVal str
-      (LPlus ITBig, [x,y]) -> mpzOp "__gmpz_add" [x, y]
-      (LMinus ITBig, [x,y]) -> mpzOp "__gmpz_sub" [x, y]
-      (LTimes ITBig, [x,y]) -> mpzOp "__gmpz_mul" [x, y]
-      (LSDiv ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_q" [x, y]
-      (LSRem ITBig, [x,y]) -> mpzOp "__gmpz_fdiv_r" [x, y]
+      (LPlus (ATInt ITBig), [x,y]) -> mpzOp "__gmpz_add" [x, y]
+      (LMinus (ATInt ITBig), [x,y]) -> mpzOp "__gmpz_sub" [x, y]
+      (LTimes (ATInt ITBig), [x,y]) -> mpzOp "__gmpz_mul" [x, y]
+      (LSDiv (ATInt ITBig), [x,y]) -> mpzOp "__gmpz_fdiv_q" [x, y]
+      (LSRem (ATInt ITBig), [x,y]) -> mpzOp "__gmpz_fdiv_r" [x, y]
       (LAnd ITBig, [x,y]) -> mpzOp "__gmpz_and" [x, y]
       (LOr ITBig, [x,y]) -> mpzOp "__gmpz_ior" [x, y]
       (LXOr ITBig, [x,y]) -> mpzOp "__gmpz_xor" [x, y]
       (LCompl ITBig, [x]) -> mpzOp "__gmpz_com" [x]
-      (LEq ITBig, [x,y]) -> mpzCmp IntEQ x y
-      (LLt ITBig, [x,y]) -> mpzCmp IntSLT x y
-      (LLe ITBig, [x,y]) -> mpzCmp IntSLE x y
-      (LGt ITBig, [x,y]) -> mpzCmp IntSGT x y
-      (LGe ITBig, [x,y]) -> mpzCmp IntSGE x y
-      (LPlus ty,  [x,y]) -> bin (FInt ty) buildAdd x y
-      (LMinus ty, [x,y]) -> bin (FInt ty) buildSub x y
-      (LTimes ty, [x,y]) -> bin (FInt ty) buildMul x y
-      (LAnd ty,   [x,y]) -> bin (FInt ty) buildAnd x y
-      (LOr ty,    [x,y]) -> bin (FInt ty) buildOr x y
-      (LXOr ty,   [x,y]) -> bin (FInt ty) buildXor x y
+      (LEq (ATInt ITBig), [x,y]) -> mpzCmp IntEQ x y
+      (LLt (ATInt ITBig), [x,y]) -> mpzCmp IntSLT x y
+      (LLe (ATInt ITBig), [x,y]) -> mpzCmp IntSLE x y
+      (LGt (ATInt ITBig), [x,y]) -> mpzCmp IntSGT x y
+      (LGe (ATInt ITBig), [x,y]) -> mpzCmp IntSGE x y
+      (LPlus ty,  [x,y]) -> bin (FArith ty) buildAdd x y
+      (LMinus ty, [x,y]) -> bin (FArith ty) buildSub x y
+      (LTimes ty, [x,y]) -> bin (FArith ty) buildMul x y
+      (LAnd ty,   [x,y]) -> bin (FArith (ATInt ty)) buildAnd x y
+      (LOr ty,    [x,y]) -> bin (FArith (ATInt ty)) buildOr x y
+      (LXOr ty,   [x,y]) -> bin (FArith (ATInt ty)) buildXor x y
       (LCompl ty,   [x]) -> do
-                     x' <- unbox (FInt ty) x
-                     yty <- ftyToNative (FInt ty)
+                     x' <- unbox (FArith (ATInt ty)) x
+                     yty <- ftyToNative (FArith (ATInt ty))
                      y <- constInt yty (-1) True
                      boxVal =<< buildXor "" x y
-      (LSHL ty,   [x,y]) -> bin (FInt ty) buildShl x y
-      (LLSHR ty,  [x,y]) -> bin (FInt ty) buildLShr x y
-      (LASHR ty,  [x,y]) -> bin (FInt ty) buildAShr x y
-      (LSRem ty,   [x,y]) -> bin (FInt ty) buildSRem x y
-      (LEq ty, [x,y]) -> icmp (FInt ty) IntEQ x y
-      (LLt ty, [x,y]) -> icmp (FInt ty) IntSLT x y
-      (LLe ty, [x,y]) -> icmp (FInt ty) IntSLE x y
-      (LGt ty, [x,y]) -> icmp (FInt ty) IntSGT x y
-      (LGe ty, [x,y]) -> icmp (FInt ty) IntSGE x y
-      (LIntCh ty, [x]) -> intCoerce False ty IT32 x
-      (LChInt ty, [x]) -> intCoerce False IT32 ty x
-      (LFPlus, [x,y]) -> bin FDouble buildFAdd x y
-      (LFMinus, [x,y]) -> bin FDouble buildFSub x y
-      (LFTimes, [x,y]) -> bin FDouble buildFMul x y
-      (LFDiv, [x,y]) -> bin FDouble buildFDiv x y
+      (LSHL ty,   [x,y]) -> bin (FArith (ATInt ty)) buildShl x y
+      (LLSHR ty,  [x,y]) -> bin (FArith (ATInt ty)) buildLShr x y
+      (LASHR ty,  [x,y]) -> bin (FArith (ATInt ty)) buildAShr x y
+      (LUDiv ty,  [x,y]) -> bin (FArith (ATInt ty)) buildUDiv x y
+      (LSDiv ty,  [x,y]) -> bin (FArith ty) buildSDiv x y
+      (LURem ty,  [x,y]) -> bin (FArith (ATInt ty)) buildURem x y
+      (LSRem ty,  [x,y]) -> bin (FArith ty) buildSRem x y
+      (LEq ty, [x,y]) -> icmp (FArith ty) IntEQ x y
+      (LLt ty, [x,y]) -> icmp (FArith ty) IntSLT x y
+      (LLe ty, [x,y]) -> icmp (FArith ty) IntSLE x y
+      (LGt ty, [x,y]) -> icmp (FArith ty) IntSGT x y
+      (LGe ty, [x,y]) -> icmp (FArith ty) IntSGE x y
+      (LIntCh ty, [x]) -> intCoerce False ty (ITFixed IT32) x
+      (LChInt ty, [x]) -> intCoerce False (ITFixed IT32) ty x
       (LStrConcat, [x, y]) -> callPrim "strConcat" [(FString, x), (FString, y)]
       (LIntStr ty, [x]) -> do
-                     x' <- unbox (FInt ty) x
+                     x' <- unbox (FArith (ATInt ty)) x
                      x'' <- if intTyWidth ty < 64
-                               then buildSExt "" x' =<< ftyToNative (FInt IT64)
+                               then buildSExt "" x' =<< ftyToNative (FArith (ATInt (ITFixed IT64)))
                                else return x'
                      intStr <- getPrim "intStr"
                      str <- buildCall "" intStr [x'']
@@ -497,28 +498,28 @@ compilePrim x args =
                      ten <- constInt i32 10 True
                      val <- buildCall "" strtol [x', null, ten]
                      val' <- if intTyWidth ty < 64
-                                then buildTrunc "" val =<< ftyToNative (FInt ty)
+                                then buildTrunc "" val =<< ftyToNative (FArith (ATInt ty))
                                 else return val
                      boxVal val'
       (LIntFloat ITBig, [x]) -> do
-                     x' <- unbox (FInt ITBig) x
+                     x' <- unbox (FArith (ATInt ITBig)) x
                      f <- getPrim "__gmpz_get_d"
                      fl <- buildCall "" f [x']
                      boxVal fl
       (LFloatInt ITBig, [x]) -> do
-                     x' <- unbox FDouble x
+                     x' <- unbox (FArith ATFloat) x
                      f <- getPrim "__gmpz_init_set_d"
                      result <- buildMPZ False
                      buildCall "" f [result, x']
                      boxVal result
       (LIntFloat ty, [x]) -> do
-                     x' <- unbox (FInt ty) x
+                     x' <- unbox (FArith (ATInt ty)) x
                      flty <- doubleType
                      fl <- buildSIToFP "" x' flty
                      boxVal fl
       (LFloatInt ty, [x]) -> do
-                     x' <- unbox FDouble x
-                     lty <- ftyToNative (FInt ty)
+                     x' <- unbox (FArith ATFloat) x
+                     lty <- ftyToNative (FArith (ATInt ty))
                      i <- buildFPToSI "" x' lty
                      boxVal i
       (LStrEq, [x, y]) -> callPrim "strEq" [(FString, x), (FString, y)]
@@ -545,15 +546,15 @@ compilePrim x args =
         boxVal result
 
       mpzOp n as = do
-        as' <- mapM (unbox (FInt ITBig)) as
+        as' <- mapM (unbox (FArith (ATInt ITBig))) as
         result <- buildMPZ True
         f <- getPrim n
         buildCall "" f (result : as')
         boxVal result
 
       mpzCmp pred l r = do
-        l' <- unbox (FInt ITBig) l
-        r' <- unbox (FInt ITBig) r
+        l' <- unbox (FArith (ATInt ITBig)) l
+        r' <- unbox (FArith (ATInt ITBig)) r
         f <- getPrim "__gmpz_cmp"
         ord <- buildCall "" f [l', r']
         i32 <- intType 32
@@ -574,11 +575,10 @@ buildMPZ doInit = do
   return result'
 
 compileConst :: Const -> ICG c s (STValue c s)
+compileConst (AType _) = getNullVal
 compileConst c
-    | elem c [ IType, BIType, FlType, ChType, StrType
-             , B8Type, B16Type, B32Type, B64Type
-             , PtrType, VoidType, Forgot
-             ] = getNullVal -- Could be undef, except might get EVALed
+    | elem c [ChType, StrType, PtrType, VoidType, Forgot]
+        = getNullVal -- Could be undef, except might get EVALed
     | otherwise = compileConstUnboxed c >>= boxVal
 
 compileConstUnboxed :: Const -> ICG c s (STValue c s)
@@ -658,13 +658,17 @@ boxVal val = do
             buildPointerCast "" box valTy
 
 unbox :: FType -> STValue c s -> ICG c s (STValue c s)
-unbox (FInt ITNative) v = unbox (FInt IT32) v
-unbox (FInt ITBig) v = unbox' v =<< pointerType =<< getPrimTy "mpz"
-unbox (FInt ity) v = intType (intTyWidth ity) >>= unbox' v
+unbox (FArith ATFloat) v = doubleType >>= unbox' v
+unbox (FArith (ATInt ITNative)) v = unbox (FArith (ATInt (ITFixed IT32))) v
+unbox (FArith (ATInt ITBig)) v = unbox' v =<< pointerType =<< getPrimTy "mpz"
+unbox (FArith (ATInt (ITFixed ity))) v = intType (fromIntegral $ nativeTyWidth ity) >>= unbox' v
+unbox (FArith (ATInt (ITVec ity count))) v =
+    do lity <- intType (fromIntegral $ nativeTyWidth ity)
+       vecty <- vectorType lity (fromIntegral count)
+       unbox' v vecty 
 unbox FChar v = intType 32 >>= unbox' v
 unbox FString v = intType 8 >>= pointerType >>= unbox' v
 unbox FPtr    v = intType 8 >>= pointerType >>= unbox' v
-unbox FDouble v = doubleType >>= unbox' v
 unbox FUnit v = return v
 unbox FAny v = return v
 
