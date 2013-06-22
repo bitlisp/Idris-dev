@@ -473,11 +473,16 @@ compilePrim x args =
       (LSDiv ty,  [x,y]) -> bin (FArith ty) buildSDiv x y
       (LURem ty,  [x,y]) -> bin (FArith (ATInt ty)) buildURem x y
       (LSRem ty,  [x,y]) -> bin (FArith ty) buildSRem x y
-      (LEq ty, [x,y]) -> icmp (FArith ty) IntEQ x y
-      (LLt ty, [x,y]) -> icmp (FArith ty) IntSLT x y
-      (LLe ty, [x,y]) -> icmp (FArith ty) IntSLE x y
-      (LGt ty, [x,y]) -> icmp (FArith ty) IntSGT x y
-      (LGe ty, [x,y]) -> icmp (FArith ty) IntSGE x y
+      (LEq (ATInt vty@(ITVec _ _)), [x,y]) -> vcmp (FArith (ATInt vty)) IntEQ x y
+      (LLt (ATInt vty@(ITVec _ _)), [x,y]) -> vcmp (FArith (ATInt vty)) IntSLT x y
+      (LLe (ATInt vty@(ITVec _ _)), [x,y]) -> vcmp (FArith (ATInt vty)) IntSLE x y
+      (LGt (ATInt vty@(ITVec _ _)), [x,y]) -> vcmp (FArith (ATInt vty)) IntSGT x y
+      (LGe (ATInt vty@(ITVec _ _)), [x,y]) -> vcmp (FArith (ATInt vty)) IntSGE x y
+      (LEq (ATInt ity), [x,y]) -> icmp (FArith (ATInt ity)) IntEQ x y
+      (LLt (ATInt ity), [x,y]) -> icmp (FArith (ATInt ity)) IntSLT x y
+      (LLe (ATInt ity), [x,y]) -> icmp (FArith (ATInt ity)) IntSLE x y
+      (LGt (ATInt ity), [x,y]) -> icmp (FArith (ATInt ity)) IntSGT x y
+      (LGe (ATInt ity), [x,y]) -> icmp (FArith (ATInt ity)) IntSGE x y
       (LIntCh ty, [x]) -> intCoerce False ty (ITFixed IT32) x
       (LChInt ty, [x]) -> intCoerce False (ITFixed IT32) ty x
       (LStrConcat, [x, y]) -> callPrim "strConcat" [(FString, x), (FString, y)]
@@ -538,6 +543,14 @@ compilePrim x args =
         i32 <- intType 32
         int <- buildZExt "" flag i32
         boxVal int
+
+      vcmp ty pred l r = do
+        lty <- ftyToNative ty
+        l' <- unbox' l lty
+        r' <- unbox' r lty
+        flags <- buildICmp "" pred l' r'
+        result <- buildSExt "" flags lty
+        boxVal result
 
       bin ty f l r = do
         l' <- unbox ty l
